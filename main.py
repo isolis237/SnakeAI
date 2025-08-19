@@ -1,8 +1,11 @@
 # Example file showing a circle moving on screen
 import pygame
+import numpy as np
 import random
-from NN.node import Node
-from NN.edges import Edge
+
+from NN.NeuralNet import NeuralNetwork, NeuralNetworkView
+
+from NN.layer import Dense, Relu
 
 def run():
     # pygame setup
@@ -12,29 +15,13 @@ def run():
     running = True
     dt = 0.0
 
-    layers = 6
-    node_diameter = min(screen.get_width() / (layers + 2), screen.get_height() / (layers + 2))
-    node_radius = int(node_diameter / 2)
+    nn = NeuralNetwork([4, 5, 3], relu_on_last=False)
+    view = NeuralNetworkView(nn, canvas_size=screen.get_size())
+    group = pygame.sprite.Group(view)
 
-    w, h = screen.get_width(), screen.get_height()
-    xs = range( node_radius * 2, w - node_radius * 2, node_radius * 4)
-    ys = range( node_radius * 2, h - node_radius * 2, node_radius * 4)
-    
-
-    nodes = [
-        Node(pos=(x,y), layer=layer_idx, color='white', r=node_radius) 
-        for layer_idx, x in enumerate(xs)
-        for y in ys
-    ]
-
-    node_pairs = [(a,b) for a in nodes for b in nodes if a is not b and a.layer == (b.layer + 1)]
-    edges = [Edge(a, b, weight=random.random()) for (a, b) in node_pairs]
-    weights = [edge.weight for edge in edges]
-
-    #Figure out how to update the value of a node/neuron based on the inputs it recieves
-    #for node_pair in node_pairs:
-    #    node_pair[1].inputs = node_pair[0].outputs * weights[0]
-
+    x = np.array([0.5, -0.2, .3, .10])
+    acts = nn.activations(x)                 # <-- get per-layer values
+    view.set_node_values(acts)
 
 
     speed = 300  # pixels per second
@@ -44,18 +31,20 @@ def run():
             if event.type == pygame.QUIT:
                 running = False
 
-        screen.fill("black")
-        for node in nodes:
-            node.draw(screen)
+            # Run update when a specific key is pressed (e.g., spacebar)
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    print("Updated")
+                    nn.update()
 
-        for edge in edges:
-            edge.draw(screen)
+        screen.fill("black")
+        group.draw(screen)
 
         pygame.display.flip()
-
         dt = clock.tick(60) / 1000.0  # seconds since last frame
 
     pygame.quit()
+
 
 if __name__ == '__main__':
     run()
