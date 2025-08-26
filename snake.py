@@ -96,7 +96,7 @@ class SnakeGame:
             reward = -0.5
 
         if self.screen:
-            self._render()  # draw snake/food on our surface
+            self._render()
 
         if self.clock:
             self.clock.tick(self.fps)
@@ -129,6 +129,8 @@ class SnakeGame:
         for idx, (x, y) in enumerate(self.snake):
             color = (60, 200, 90) if idx == 0 else (40, 160, 70)
             pg.draw.rect(surf, color, pg.Rect(x * c, y * c, c, c))
+        
+        pg.display.flip()
 
     def draw_overlay(self, font, is_leader=False, show_score=True):
         """Draw per-tile overlay (score + border)."""
