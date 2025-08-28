@@ -1,91 +1,130 @@
 # main.py
-import random
-from wall import SnakeWall
-from snake import SnakeGame
-
+import argparse
 import numpy as np
-
-from NN.neuralnet import NeuralNetwork
 import torch
 
-device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
-print(f"Using {device} device")
+# ---- snake side ----
+from core.snake_rules import Rules, Config
+from core.snake_env import SnakeEnv
+from viz.renderer import Renderer
+from viz.keyboard import Keyboard
 
-def play_manual():
-    g = SnakeGame(fps=10)
-    g.init("Snake - Manual")
-    g.reset()
-    while g.running and not g.done:
-        _, _, done, _ = g.step(action=None)
-        if done: break
-    g.close()
-
-def play_agent():
-    g = SnakeGame(grid_w=12, grid_h=12, fps=8)
-    H,W, C = 12,12,3
-    flat_dim = H*W*C
-
-    g.init("Snake - Agent")
-    g.reset()
-
-    model = NeuralNetwork(
-        input_dim=flat_dim,
-        n_actions=3,                 # L / S / R
-        hidden_sizes=(32, 32),  
-        activation="relu",
-        use_batchnorm=False,
-        dropout_p=0.0,
-        weight_init="kaiming",      
-    ).to(device)
-    model.eval()
-
-     # 4) Dummy batch ON THE SAME DEVICE
-    x = torch.randn(32, flat_dim, device=device)
-    logits = model(x)                 # OK
-    probs  = torch.softmax(logits, 1) # OK
-
-    rng = random.Random(0)
-    while g.running and not g.done:
-        action = rng.choice([0, 1, 2])
-        obs, reward, done, other = g.step(action)
+# ---- policy side ----
+from policy.policy import TorchPolicy
 
 
-        state = obs.reshape(-1).astype("float32")
-        x1 = torch.from_numpy(state).unsqueeze(0).to(device)
+# simple example model (replace with your real one)
+class TinyMLP(torch.nn.Module):
+    def __init__(self, inp, out=3):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(inp, 64), torch.nn.ReLU(),
+            torch.nn.Linear(64, out)
+        )
+    def forward(self, x): return self.net(x)
 
-        with torch.no_grad():
-            logits = model(x1)
-            action = int(torch.argmax(logits, dim=1).item())
 
-        _, _, done, _ = g.step(action)
-        if done:
-            break
-        
-        #print("head channel sample:\n", obs[:g.grid_w,:g.grid_h,1])
-        #print("food channel sample:\n", obs[:g.grid_w,:g.grid_h,2])
+def run_snake(args):
+    """Run Snake game only (human control, no NN)."""
+    DIRS = [(1,0),(0,1),(-1,0),(0,-1)]  # Right, Down, Left, Up
+    def dir_to_abs(cur_dir):
+        return DIRS.index(cur_dir)
 
-        # body, head, food = obs[...,0], obs[...,1], obs[...,2]
-        # merged = np.where(head==1, 2,       # code head as 2
-        #         np.where(food==1, 3,      # code food as 3
-        #         np.where(body==1, 1, 0)))
-        # print(merged)
+    env = SnakeEnv(Rules(Config(grid_w=args.grid_w, grid_h=args.grid_h)))
+    rend = Renderer(cell_px=args.cell_px)
+    rend.create_window(args.grid_w, args.grid_h, "Snake — Human")
+    kbd = Keyboard(relative=True)
 
-        #for row in g._obs_visual():
-        #     print(row)
-        # print()
-        if done: break
-    g.close()
+    obs = env.reset()
+    done = False
+    while not done:
+        key = kbd.poll()
+        if key == "quit": break
 
-def run_multi():
-    # grid_w/h -> discrete positions(steps) exist horizontally/vertically in each game
-    # cell -> how many pixels in each grid square / position
+        if key is None:
+            # No key: continue current direction
+            cur_dir = env.get_snapshot().dir
+            action = dir_to_abs(cur_dir) if not env.rules.cfg.relative_actions else 0
+        else:
+            action = key
 
-    # max ~ SnakeWall(rows=105, cols=210, grid_w=12, grid_h=12, cell= 1, fps=12, seed=0, restart_finished=True)
-    # comfortable 
-    wall = SnakeWall(rows=4, cols=5, grid_w=12, grid_h=12, cell=22, fps=12, seed=0, restart_finished=True)
-    wall.run()
+        step = env.step(action)
+        rend.draw(step.info["snapshot"])
+        rend.tick(args.fps)
+        done = step.terminated or step.truncated
+
+    rend.close()
+
+
+def run_policy(args):
+    """Run NN only (feed it random observations, see outputs)."""
+    flat_dim = args.grid_w * args.grid_h * 3
+    model = TinyMLP(flat_dim)
+    pol = TorchPolicy(model, device=torch.device("cpu"), obs_mode="flat")
+
+    rng = np.random.default_rng(args.seed)
+    cnt = np.zeros(3, dtype=int)
+    for _ in range(100):
+        obs = rng.random(flat_dim, dtype=np.float32)
+        a = pol.act(obs)
+        cnt[a] += 1
+    print("NN-only mode action histogram:", cnt)
+
+
+def run_loop(args):
+    """Run NN + Snake together (training/eval loop)."""
+    cfg = Config(grid_w=args.grid_w, grid_h=args.grid_h)
+    env = SnakeEnv(Rules(cfg), obs_mode="flat")
+    flat_dim = np.prod(env.observation_shape())
+    policy = TorchPolicy(TinyMLP(flat_dim), device=torch.device("cpu"), obs_mode="flat")
+
+    renderer = Renderer(cell_px=args.cell_px) if args.render else None
+    if renderer:
+        renderer.create_window(cfg.grid_w, cfg.grid_h, "Snake — Eval")
+
+    for ep in range(args.episodes):
+        obs = env.reset(seed=args.seed + ep)
+        done, ret = False, 0.0
+        while not done:
+            a = policy.act(obs)
+            step = env.step(a)
+            if renderer:
+                renderer.draw(step.info["snapshot"])
+                renderer.tick(args.fps)
+            obs, ret = step.obs, ret + step.reward
+            done = step.terminated or step.truncated
+        print(f"[ep {ep}] return={ret:.2f} score={step.info.get('score')}")
+    if renderer:
+        renderer.close()
+
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("mode", choices=["snake", "policy", "loop"])
+    p.add_argument("--grid-w", type=int, default=12)
+    p.add_argument("--grid-h", type=int, default=12)
+    p.add_argument("--episodes", type=int, default=5)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--fps", type=int, default=10)
+    p.add_argument("--cell-px", type=int, default=24)
+    p.add_argument("--n-envs", type=int, default=8)
+    p.add_argument("--episodes-per-env", type=int, default=3)
+    p.add_argument("--render", action="store_true")
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+    if args.mode == "snake":
+        run_snake(args)
+    elif args.mode == "policy":
+        run_policy(args)
+    elif args.mode == "loop":
+        run_loop(args)
+    elif args.mode == "multi":
+        run_multi(args)
+
+
 
 if __name__ == "__main__":
-    #play_manual()
-    play_agent()
-    #run_multi()
+    main()
