@@ -109,3 +109,29 @@ class Rules:
             grid_w=self.cfg.grid_w,
             grid_h=self.cfg.grid_h,
         )
+
+    def get_state(self) -> dict:
+        """Pure-Python, JSON-serializable state (plus RNG)."""
+        return {
+            "snake": list(self.snake),
+            "dir": self.dir,
+            "food": self.food,
+            "score": self.score,
+            "steps_since_food": self.steps_since_food,
+            "step_count": self.step_count,
+            "terminated": self.terminated,
+            "reason": self.reason,
+            "rng_state": self.rng.getstate(),
+        }
+
+    def set_state(self, state: dict) -> None:
+        """Restore exact internal state (including RNG)."""
+        self.snake = list(map(tuple, state["snake"]))
+        self.dir = tuple(state["dir"])
+        self.food = tuple(state["food"])
+        self.score = int(state["score"])
+        self.steps_since_food = int(state["steps_since_food"])
+        self.step_count = int(state["step_count"])
+        self.terminated = bool(state["terminated"])
+        self.reason = state["reason"]
+        self.rng.setstate(tuple(state["rng_state"]))

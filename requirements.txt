@@ -2,3 +2,4 @@ pygame
 pytest
 numpy
 torch
+matplotlib

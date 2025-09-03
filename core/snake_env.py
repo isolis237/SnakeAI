@@ -1,9 +1,12 @@
 # snake/core/snake_env.py
 from __future__ import annotations
 from collections import deque
+from typing import Optional, Dict, Any, Tuple
 import numpy as np
 from .interfaces import Env, StepResult, Snapshot
 from .snake_rules import Rules, Config
+from .feature_iface import Featurizer
+from .reward_iface import RewardAdapter
 
 def manhattan(a, b):
     return abs(a[0]-b[0]) + abs(a[1]-b[1])
@@ -16,43 +19,46 @@ class SnakeEnv(Env):
         reward_mode: str = "basic",
         include_walls: bool = True,
         include_dir: bool = True,
+        featurizer: Optional[Featurizer] = None,
+        reward_adapter: Optional[RewardAdapter] = None,
+        seed: Optional[int] = None,
     ):
         self.rules = rules
         self.obs_mode = obs_mode
         self.reward_mode = reward_mode
         self.include_walls = include_walls
         self.include_dir = include_dir
+        self._featurizer = featurizer
+        self._reward_adapter = reward_adapter
 
-        # --- shaping state ---
-        self._recent_heads = deque(maxlen=8)   # loop/oscillation detection
+        # RNG for env-level (distinct from Rules RNG)
+        self._rng = np.random.default_rng(seed)
+
+        # --- shaping state (unchanged) ---
+        self._recent_heads = deque(maxlen=8)
         self._prev_food_dist: float | None = None
-        self._steps_since_bite: int = 0        # track steps since last bite
+        self._steps_since_bite: int = 0
 
-        # --- reward knobs (replace your current values with these) ---
-        self._living_penalty      = -0.003   # small “doing nothing” penalty
-        self._dist_gain_weight    =  0.035   # distance-to-food base weight
-        self._dist_gain_scale     =  0.30   # stronger pull as snake grows
-
-        self._bite_base           =  2.05    # clear positive signal for eating
-        self._bite_gain_per_pt    =  0.25    # later bites worth more, but not explosive
-        self._survive_per_step    =  0.002   # scaled by score each step
-
-        self._terminal_score_w    =  0.05    # dying with higher score hurts less
-        self._loop_penalty        = -0.020   # penalize tiny orbits
-
-        # terminal reason extras (on top of -1.0 base)
+        # --- reward knobs (kept here if no RewardAdapter is provided) ---
+        self._living_penalty      = -0.003
+        self._dist_gain_weight    =  0.035
+        self._dist_gain_scale     =  0.30
+        self._bite_base           =  2.05
+        self._bite_gain_per_pt    =  0.25
+        self._survive_per_step    =  0.002
+        self._terminal_score_w    =  0.05
+        self._loop_penalty        = -0.020
         self._wall_death_extra       = -0.60
         self._self_death_extra       = -0.45
         self._starvation_death_extra = -0.25
-
-        # post-bite “clean movement” boost (decays over a few steps)
         self._post_bite_bonus_steps = 8
         self._post_bite_step_bonus  = 0.010
 
-
+    # ---- Env Protocol ----
     def reset(self, *, seed: int | None = None) -> np.ndarray:
         if seed is not None:
             self.rules.seed(seed)
+            self._rng = np.random.default_rng(seed)
         snap = self.rules.reset()
         self._recent_heads.clear()
         self._recent_heads.append(snap.snake[0])
@@ -64,32 +70,37 @@ class SnakeEnv(Env):
         prev = self.rules.snapshot()
         snap = self.rules.step(action)
 
-        # compute reward BEFORE updating trackers
-        reward = self._reward(prev, snap)
+        # reward first
+        reward = self._compute_reward(prev, snap)
         obs = self._encode_obs(snap)
 
-        # update trackers AFTER reward (so deltas use prev state)
+        # trackers
         self._recent_heads.append(snap.snake[0])
         self._prev_food_dist = manhattan(snap.snake[0], snap.food)
-
-        # update post-bite counter
         if snap.score > prev.score:
             self._steps_since_bite = 0
         else:
             self._steps_since_bite += 1
 
-        return StepResult(
-            obs=obs, reward=reward,
-            terminated=snap.terminated, truncated=False,
-            info={"snapshot": snap, "score": snap.score, "reason": snap.reason}
-        )
+        # optional action mask
+        mask = self._action_mask()
+
+        info: Dict[str, Any] = {
+            "snapshot": snap,
+            "score": snap.score,
+            "reason": snap.reason,
+            "action_mask": mask,  # for policies that support masking
+        }
+        return StepResult(obs=obs, reward=reward, terminated=snap.terminated, truncated=False, info=info)
 
     def action_space_n(self) -> int:
-        return 3 if self.rules.cfg.relative_actions else 4  # relative: straight/left/right (or 4 if absolute)
+        return 3 if self.rules.cfg.relative_actions else 4
 
     def observation_shape(self) -> tuple[int, ...]:
         H = self.rules.cfg.grid_h
         W = self.rules.cfg.grid_w
+        if self._featurizer is not None:
+            return self._featurizer.shape(H, W)
         C = 3 + (1 if self.include_walls else 0) + (2 if self.include_dir else 0)
         if self.obs_mode == "ch3":
             return (H, W, C)
@@ -98,45 +109,83 @@ class SnakeEnv(Env):
     def get_snapshot(self) -> Snapshot:
         return self.rules.snapshot()
 
-    # --- helpers ---
+    # ---- Checkpointing hooks (pure-Python) ----
+    def get_state(self) -> Dict[str, Any]:
+        """Return env+rules state to reproduce training exactly."""
+        return {
+            "rules": self.rules.get_state(),
+            "recent_heads": list(self._recent_heads),
+            "prev_food_dist": self._prev_food_dist,
+            "steps_since_bite": self._steps_since_bite,
+            "obs_mode": self.obs_mode,
+            "reward_mode": self.reward_mode,
+            "include_walls": self.include_walls,
+            "include_dir": self.include_dir,
+            "rng_state": self._rng.bit_generator.state,  # numpy RNG state (dict)
+        }
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        self.rules.set_state(state["rules"])
+        self._recent_heads.clear()
+        for p in state["recent_heads"]:
+            self._recent_heads.append(tuple(p))
+        self._prev_food_dist = state["prev_food_dist"]
+        self._steps_since_bite = int(state["steps_since_bite"])
+        self.obs_mode = state["obs_mode"]
+        self.reward_mode = state["reward_mode"]
+        self.include_walls = bool(state["include_walls"])
+        self.include_dir = bool(state["include_dir"])
+        self._rng.bit_generator.state = state["rng_state"]
+
+    # ---- Helpers ----
     def _encode_obs(self, s: Snapshot) -> np.ndarray:
+        if self._featurizer is not None:
+            return self._featurizer.encode(s)
+
         H, W = s.grid_h, s.grid_w
         C = 3 + (1 if self.include_walls else 0) + (2 if self.include_dir else 0)
         grid = np.zeros((H, W, C), dtype=np.float32)
 
         ch = 0
-        # body (excluding head)
         for (x, y) in list(s.snake)[1:]:
             grid[y, x, ch] = 1.0
         ch += 1
+        hx, hy = s.snake[0]; grid[hy, hx, ch] = 1.0; ch += 1
+        fx, fy = s.food;     grid[fy, fx, ch] = 1.0; ch += 1
 
-        # head
-        hx, hy = s.snake[0]
-        grid[hy, hx, ch] = 1.0
-        ch += 1
-
-        # food
-        fx, fy = s.food
-        grid[fy, fx, ch] = 1.0
-        ch += 1
-
-        # walls (borders = 1)
         if self.include_walls:
-            grid[0, :, ch] = 1.0
-            grid[H - 1, :, ch] = 1.0
-            grid[:, 0, ch] = 1.0
-            grid[:, W - 1, ch] = 1.0
+            grid[0, :, ch] = 1.0; grid[H - 1, :, ch] = 1.0
+            grid[:, 0, ch] = 1.0; grid[:, W - 1, ch] = 1.0
             ch += 1
 
-        # direction channels: broadcast (dx, dy)
         if self.include_dir:
-            dx, dy = s.dir  # e.g., (-1,0),(1,0),(0,-1),(0,1)
+            dx, dy = s.dir
             grid[:, :, ch] = float(dx); ch += 1
             grid[:, :, ch] = float(dy); ch += 1
 
         if self.obs_mode == "flat":
             return grid.reshape(-1)
         return grid
+
+    def _compute_reward(self, prev: Snapshot, cur: Snapshot) -> float:
+        if self._reward_adapter is not None:
+            return self._reward_adapter.compute(prev, cur)
+        return self._reward(prev, cur)  # fallback to built-in shaping
+
+    def _action_mask(self) -> np.ndarray:
+        """Mask illegal actions (absolute mode): block 180° reversals when len>1.
+        For relative mode, all 3 actions are always allowed (mask all ones).
+        Returns shape: (action_space_n,) with 1.0 allowed, 0.0 disallowed.
+        """
+        n = self.action_space_n()
+        mask = np.ones((n,), dtype=np.float32)
+        if not self.rules.cfg.relative_actions and len(self.rules.snake) > 1:
+            cdx, cdy = self.rules.dir
+            abs_dirs = [(1,0), (0,1), (-1,0), (0,-1)]
+            cur_i = abs_dirs.index((cdx, cdy))
+            reverse_i = (cur_i + 2) % 4
+            mask[reverse_i] = 0.0
+        return mask
 
     def _reward(self, prev: Snapshot, cur: Snapshot) -> float:
         # --- terminal: base penalty + reason-specific extra + credit for achieved score ---
