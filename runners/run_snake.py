@@ -4,20 +4,31 @@ from core.snake_env import SnakeEnv
 from viz.renderer import Renderer
 from viz.keyboard import Keyboard
 
-def main(grid_w=12, grid_h=12, fps=10):
-    env = SnakeEnv(Rules(Config(grid_w=grid_w, grid_h=grid_h)))
-    rend = Renderer(cell_px=24); rend.create_window(grid_w, grid_h, "Snake — Human")
-    kbd = Keyboard(relative=True)
+def main(args):
+    RELATIVE_ACTIONS=False
+    DIRS = [(1,0),(0,1),(-1,0),(0,-1)]  # Right, Down, Left, Up
+    def dir_to_abs(cur_dir):
+        return DIRS.index(cur_dir)
+
+    env = SnakeEnv(Rules(Config(grid_w=args.grid_w, grid_h=args.grid_h, relative_actions=RELATIVE_ACTIONS)))
+    rend = Renderer(cell_px=args.cell_px); rend.create_window(args.grid_w, args.grid_h, "Snake — Human")
+    kbd = Keyboard(relative=RELATIVE_ACTIONS)
 
     obs = env.reset()
     done = False
     while not done:
         key = kbd.poll()
         if key == "quit": break
-        action = key if isinstance(key, int) else 0  # straight if no key
+        if key is None:
+            # No key: continue current direction
+            cur_dir = env.get_snapshot().dir
+            action = dir_to_abs(cur_dir) if not env.rules.cfg.relative_actions else 0
+        else:
+            action = key
+
         step = env.step(action)
         rend.draw(step.info["snapshot"])
-        rend.tick(fps)
+        rend.tick(args.fps)
         done = step.terminated or step.truncated
     rend.close()
 

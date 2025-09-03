@@ -53,7 +53,16 @@ class Rules:
         if self.cfg.relative_actions:
             self.dir = self._apply_relative(self.dir, action)
         else:
-            self.dir = [(1,0),(0,1),(-1,0),(0,-1)][action]
+            # absolute: action directly selects a DIRS entry
+            ndx, ndy = [(1,0), (0,1), (-1,0), (0,-1)][action]
+            cdx, cdy = self.dir
+
+            # Prevent instant 180° reversal if the snake has a body
+            if len(self.snake) > 1 and (ndx == -cdx and ndy == -cdy):
+                # ignore invalid reverse; keep current direction
+                return
+
+            self.dir = (ndx, ndy)
 
     def step(self, action: int) -> Snapshot:
         if self.terminated:

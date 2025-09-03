@@ -8,18 +8,21 @@ class Renderer:
         self.cell = cell_px
         self.surf = None
         self.clock = None
+        self._auto_flip = True
 
     def create_window(self, w: int, h: int, title="Snake"):
         pg.init()
         pg.display.set_caption(title)
         self.surf = pg.display.set_mode((w*self.cell, h*self.cell))
         self.clock = pg.time.Clock()
+        self._auto_flip = True
 
     def attach_surface(self, surface: pg.Surface):
         if not pg.get_init():
             pg.init()
         self.surf = surface
         self.clock = None
+        self._auto_flip = False
 
     def draw(self, s: Snapshot, score_text=True):
         c = self.cell; surf = self.surf
@@ -33,7 +36,9 @@ class Renderer:
             font = pg.font.SysFont(None, 22)
             txt = font.render(f"Score: {s.score}", True, theme.TEXT)
             surf.blit(txt, (6, 4))
-        pg.display.flip()
+        
+        if self._auto_flip:
+            pg.display.flip()
 
     def tick(self, fps: int):
         if self.clock:
