@@ -13,6 +13,12 @@ from rl.metrics import EMA, WindowedStat
 from rl.torch_net import TorchMLPQNet
 from rl.ring_buffer import RingBuffer
 
+from rl.utils import resolve_device
+
+from rl.async_episode_player import AsyncEpisodePlayer
+from rl.hooks_live import LiveRenderHook  # the async/episode-queued version
+from viz.live_viewer import LiveViewer
+
 import torch
 
 ALL_KEYS = [
@@ -26,32 +32,44 @@ ALL_KEYS = [
     "epis/final_score", "epis/death_wall", "epis/death_self", "epis/death_starvation",
 ]
 
-def build_parser():
-    p = argparse.ArgumentParser()
-    p.add_argument("mode", choices=["snake", "snake_agent", "loop", "multi", "nnview"])
-    p.add_argument("--grid_w", type=int, default=12)
-    p.add_argument("--grid_h", type=int, default=12)
-    p.add_argument("--episodes", type=int, default=750)
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--device", type=str, default="cpu")  # or "auto" if you use resolve_device()
-    p.add_argument("--batch", type=int, default=64)
-    p.add_argument("--lr", type=float, default=1e-35)
-    p.add_argument("--warmup", type=int, default=10_000)
-    p.add_argument("--cap", type=int, default=150_000)
-    p.add_argument("--dueling", action="store_true")
-    p.add_argument("--max_ep_steps", type=int, default=0)
-    p.add_argument("--log_every_updates", type=int, default=100)   # new
-    p.add_argument("--echo_every_steps", type=int, default=1_500) # new
-    return p
-
 def main(args):
-    parser = build_parser()
-    args = parser.parse_args()
-
     # --- Env
-    env = SnakeEnv(Rules(SnakeCfg(grid_w=args.grid_w, grid_h=args.grid_h, relative_actions=True, seed=args.seed)))
+    env = SnakeEnv(Rules(SnakeCfg(
+        grid_w=args.grid_w,
+        grid_h=args.grid_h,
+        relative_actions=True,
+        seed=args.seed
+    )))
     obs_shape = env.observation_shape()
     n_actions = env.action_space_n()
+
+    # --- Live view (optional)
+    live_hook = None
+    if args.live_view:
+        # Sink (pygame window, video writer, etc.) – used only by the player thread
+        sink = LiveViewer(
+            fps=args.view_fps,            # playback FPS (not training speed)
+            record_dir=args.record_dir,
+            title="Snake — Training",
+            cell_px=args.cell_px,
+            grid_lines=args.grid_lines,
+            show_hud=not args.hide_hud,
+        )
+        # Player thread that replays *complete* episodes at a steady FPS
+        player = AsyncEpisodePlayer(
+            sink,
+            fps=args.view_fps,
+            max_episodes_buffered=args.player_buffer
+        )
+        # Hook that RECORDS frames during the episode and enqueues at end
+        live_hook = LiveRenderHook(
+            sink_player=player,
+            grid_w=args.grid_w,
+            grid_h=args.grid_h,
+            stream_episode_prob=args.stream_ep_prob,
+            best_metric=args.best_metric,
+            rng_seed=args.viewer_seed,
+        )
 
     # --- Networks
     q_net = TorchMLPQNet(obs_shape, n_actions, dueling=args.dueling, device=args.device)
@@ -82,7 +100,6 @@ def main(args):
     print(f"replay cap: {args.cap}  warmup: {args.warmup}  dueling: {args.dueling}")
     print("logs: runs/snake_dqn/logs.csv  tb: runs/snake_dqn/tb")
 
-
     csv_logger = CSVLogger("runs/snake_dqn/logs.csv", fieldnames=ALL_KEYS)
     try:
         tb_logger = TBLogger("runs/snake_dqn/tb")
@@ -106,10 +123,9 @@ def main(args):
             "train/updates": stats.get("updates"),
             "train/grad_norm": stats.get("grad_norm"),
         })
-
         print(f"[step {stats['step']:>7}] upd={stats['updates']:>6} "
-        f"loss={stats['loss']:.4f} eps={stats['epsilon']:.3f} "
-        f"replay={stats['replay_size']:>6} qμ={stats['q_mean']:.3f} qmax={stats['q_max']:.3f}")
+              f"loss={stats['loss']:.4f} eps={stats['epsilon']:.3f} "
+              f"replay={stats['replay_size']:>6} qμ={stats['q_mean']:.3f} qmax={stats['q_max']:.3f}")
 
     def on_episode_end(ep, s):
         step = agent.state.global_step
@@ -132,18 +148,21 @@ def main(args):
         logger.flush()
 
         print(f"[episode {ep:>5}] step={step:>7}  R={er:7.3f} (EMA {r_ema:7.3f})  "
-        f"len={el:4d} (EMA {l_ema:7.2f})  score={s.get('final_score',0)}  "
-        f"death={s.get('death_reason')}")
+              f"len={el:4d} (EMA {l_ema:7.2f})  score={s.get('final_score',0)}  "
+              f"death={s.get('death_reason')}")
 
     trainer = DQNTrainer(
         env,
         agent,
         TrainHooks(on_step_log=on_step_log, on_episode_end=on_episode_end),
         max_steps_per_episode=(args.max_ep_steps or None),
+        live_hook=live_hook
     )
 
-    trainer.train(num_episodes=args.episodes)
+    # Train + stream/record full episodes (decoupled playback if async hook is used)
+    trainer.train_and_stream(num_episodes=args.episodes)
     logger.close()
+
 
 
 if __name__ == "__main__":
