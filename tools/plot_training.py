@@ -53,6 +53,7 @@ final_score = []
 death_wall = []; death_self = []; death_starv = []
 train_loss, train_eps = [], []
 train_qmean, train_qmax, train_qmin = [], [], []
+ep_idx, ep_reward, ep_len = [], [], []
 
 with LOG_PATH.open(newline="") as f:
     r = csv.DictReader(f)
@@ -63,6 +64,11 @@ with LOG_PATH.open(newline="") as f:
     for row in r:
         rows += 1
         steps.append(int(row["step"]))
+        if row.get("episode") not in (None, ""):
+            ep_idx.append(int(float(row["episode"])))
+            ep_reward.append(to_float(row.get("epis/reward")))
+            ep_len.append(to_float(row.get("epis/len")))
+            
         epis_reward.append(get(row, "epis/reward"))
         epis_reward_ema.append(get(row, "epis/reward_ema"))
         epis_reward_mean100.append(get(row, "epis/reward_mean100"))
@@ -140,6 +146,16 @@ fig = plt.figure(figsize=(10, 5))
 plt.plot(steps, train_eps, linewidth=1)
 plt.title("Epsilon"); plt.xlabel("step"); plt.ylabel("epsilon")
 savefig_named(fig, "train_epsilon.png"); plt.close(fig)
+
+fig = plt.figure(figsize=(10, 5))
+plt.plot(ep_idx, ep_reward, linewidth=1, alpha=0.6)
+plt.title("Episode Reward (by episode)"); plt.xlabel("episode"); plt.ylabel("reward")
+savefig_named(fig, "epis_reward_by_episode.png"); plt.close(fig)
+
+fig = plt.figure(figsize=(10, 5))
+plt.plot(ep_idx, ep_len, linewidth=1, alpha=0.6)
+plt.title("Episode Length (by episode)"); plt.xlabel("episode"); plt.ylabel("steps/episode")
+savefig_named(fig, "epis_length_by_episode.png"); plt.close(fig)
 
 fig = plt.figure(figsize=(10, 5))
 plt.plot(steps, train_qmean, label="mean")

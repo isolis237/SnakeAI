@@ -40,19 +40,19 @@ class SnakeEnv(Env):
         self._steps_since_bite: int = 0
 
         # --- reward knobs (kept here if no RewardAdapter is provided) ---
-        self._living_penalty      = -0.003
-        self._dist_gain_weight    =  0.035
-        self._dist_gain_scale     =  0.30
-        self._bite_base           =  2.05
-        self._bite_gain_per_pt    =  0.25
+        self._living_penalty      = -0.01
+        self._dist_gain_weight    =  0.08
+        self._dist_gain_scale     =  0.35
+        self._bite_base           =  1.15
+        self._bite_gain_per_pt    =  0.38
         self._survive_per_step    =  0.002
-        self._terminal_score_w    =  0.05
-        self._loop_penalty        = -0.020
-        self._wall_death_extra       = -0.60
-        self._self_death_extra       = -0.45
-        self._starvation_death_extra = -0.25
-        self._post_bite_bonus_steps = 8
-        self._post_bite_step_bonus  = 0.010
+        self._terminal_score_w    =  0.15
+        self._loop_penalty        = -0.075
+        self._wall_death_extra       = -0.45
+        self._self_death_extra       = -0.15
+        self._starvation_death_extra = -0.2
+        self._post_bite_bonus_steps = 2
+        self._post_bite_step_bonus  = 0.02
 
     # ---- Env Protocol ----
     def reset(self, *, seed: int | None = None) -> np.ndarray:

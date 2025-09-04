@@ -23,14 +23,14 @@ import torch
 
 ALL_KEYS = [
     "step",
-    # train
-    "train/loss", "train/epsilon", "train/replay_size",
-    "train/q_mean", "train/q_max", "train/q_min", "train/updates",
-    # episode
-    "epis/reward", "epis/reward_ema", "epis/reward_mean100",
-    "epis/len", "epis/len_ema", "epis/len_mean100",
-    "epis/final_score", "epis/death_wall", "epis/death_self", "epis/death_starvation",
+    "train/loss","train/epsilon","train/replay_size","train/q_mean","train/q_max","train/q_min",
+    "train/updates","train/grad_norm",
+    "train/learn_started","train/replay_fill",           # ← NEW
+    "epis/reward","epis/reward_ema","epis/reward_mean100",
+    "epis/len","epis/len_ema","epis/len_mean100",
+    "epis/final_score","epis/death_wall","epis/death_self","epis/death_starvation",
 ]
+
 
 def main(args):
     # --- Env
@@ -77,7 +77,7 @@ def main(args):
 
     # --- Replay & epsilon
     replay = RingBuffer(capacity=args.cap, seed=args.seed)
-    eps = LinearDecayEpsilon(1.0, 0.05, 250_000)
+    eps = LinearDecayEpsilon(DQNConfig.epsilon_start, DQNConfig.epsilon_end, DQNConfig.epsilon_decay_steps)
 
     # --- Config & optimizer
     cfg = DQNConfig(
@@ -111,9 +111,11 @@ def main(args):
     win_reward = WindowedStat(100); win_length = WindowedStat(100)
 
     def on_step_log(stats):
-        if stats["updates"] % 10 != 0:
+        # Log every N updates; but also log occasionally even with no learning
+        if stats.get("updates", 0) % 10 != 0 and stats.get("step", 0) % 200 != 0:
             return
-        logger.log(stats["step"], {
+
+        scalars = {
             "train/loss": stats.get("loss"),
             "train/epsilon": stats.get("epsilon"),
             "train/replay_size": stats.get("replay_size"),
@@ -122,10 +124,18 @@ def main(args):
             "train/q_min": stats.get("q_min"),
             "train/updates": stats.get("updates"),
             "train/grad_norm": stats.get("grad_norm"),
-        })
+            "train/learn_started": 1.0 if stats.get("replay_size", 0) >= args.warmup else 0.0,
+            "train/replay_fill": stats.get("replay_size"),
+        }
+        logger.log(stats["step"], scalars)
+
         print(f"[step {stats['step']:>7}] upd={stats['updates']:>6} "
-              f"loss={stats['loss']:.4f} eps={stats['epsilon']:.3f} "
-              f"replay={stats['replay_size']:>6} qμ={stats['q_mean']:.3f} qmax={stats['q_max']:.3f}")
+            f"loss={scalars['train/loss'] if scalars['train/loss'] is not None else float('nan'):.4f} "
+            f"eps={scalars['train/epsilon']:.3f} "
+            f"replay={scalars['train/replay_size']:>6} "
+            f"learn_started={int(scalars['train/learn_started'])} "
+            f"qμ={scalars['train/q_mean']:.3f} qmax={scalars['train/q_max']:.3f}")
+
 
     def on_episode_end(ep, s):
         step = agent.state.global_step
@@ -134,6 +144,7 @@ def main(args):
         win_reward.add(er); win_length.add(el)
         wr, wl = win_reward.summary(), win_length.summary()
         logger.log(step, {
+            "episode": ep,
             "epis/reward": er,
             "epis/reward_ema": r_ema,
             "epis/reward_mean100": wr["mean"],

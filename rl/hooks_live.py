@@ -33,9 +33,11 @@ class LiveRenderHook:
 
         self._stream_this_episode = False
         self._curr_episode_frames: List[Snapshot] = []
+        self._curr_ep_idx: Optional[int] = None  
 
         self._best_value: float = float("-inf")
         self._best_episode_frames: List[Snapshot] = []
+        self._best_ep_idx: Optional[int] = None  
         self._keep_best = enqueue_best_for_final_replay
 
     # --- lifecycle ---
@@ -49,6 +51,7 @@ class LiveRenderHook:
             self.ensure_started()
         self._stream_this_episode = (self._rng.random() < self.stream_episode_prob)
         self._curr_episode_frames.clear()
+        self._curr_ep_idx = ep_index
 
     def is_streaming(self) -> bool:
         # “streaming” here means “recording this episode”
@@ -72,25 +75,33 @@ class LiveRenderHook:
 
         if self._stream_this_episode and self._curr_episode_frames:
             # Enqueue for paced playback
-            self.player.enqueue_episode(list(self._curr_episode_frames), gap_sec=0.35)
+            ep = self._curr_ep_idx if self._curr_ep_idx is not None else "-"
+            r  = float(episode_summary.get("reward", 0.0))
+            ln = int(episode_summary.get("steps", 0))
+            sc = int(episode_summary.get("final_score", 0))
+            dr = str(episode_summary.get("death_reason", ""))
+            overlay = f"Episode {ep}  |  R={r:.2f}  len={ln}  score={sc}  death={dr}"
 
-            if self._keep_best:
-                if self.best_metric == "final_score":
-                    val = float(episode_summary.get("final_score", 0.0))
-                else:
-                    val = float(episode_summary.get("reward", 0.0))
-                if val > self._best_value:
-                    self._best_value = val
-                    self._best_episode_frames = list(self._curr_episode_frames)
+            self.player.enqueue_episode(list(self._curr_episode_frames), gap_sec=0.35, overlay=overlay)
+
+            # Track best (optional)
+            val = sc if self.best_metric == "final_score" else r
+            if self._keep_best and val > self._best_value:
+                self._best_value = val
+                self._best_episode_frames = list(self._curr_episode_frames)
+                self._best_ep_idx = ep
 
         self._curr_episode_frames.clear()
         self._stream_this_episode = False
+        self._curr_ep_idx = None
 
     def replay_best(self) -> None:
         # Instead of pushing directly, enqueue best for one more playback.
         if not (self._started and self._best_episode_frames):
             return
-        self.player.enqueue_episode(list(self._best_episode_frames), gap_sec=0.0)
+        ep = self._best_ep_idx if self._best_ep_idx is not None else "-"
+        overlay = f"BEST EPISODE (ep {ep})  |  {self.best_metric}={self._best_value:.2f}"
+        self.player.enqueue_episode(list(self._best_episode_frames), gap_sec=0.0, overlay=overlay)
 
     def close(self) -> None:
         self.player.close()

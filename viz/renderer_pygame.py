@@ -17,6 +17,10 @@ class PygameRenderer(Renderer):
         self._grid_h = 0
         self._cfg = RenderConfig()
         self._frame_idx = 0
+        self._overlay_text: Optional[str] = None
+
+    def set_overlay(self, text: Optional[str]) -> None:
+        self._overlay_text = text or ""
 
     # --- Protocol: open / draw / tick / close / save_frame ---
     def open(self, grid_w: int, grid_h: int, cfg: RenderConfig) -> None:
@@ -72,6 +76,12 @@ class PygameRenderer(Renderer):
                 True, theme.TEXT
             )
             surf.blit(txt, (6, 4))
+
+        if self._overlay_text:
+            font = pg.font.SysFont(None, 22)
+            ovr = font.render(self._overlay_text, True, theme.TEXT)
+            # place below the HUD or in top-right; here: top-left, line 2
+            surf.blit(ovr, (6, 26))
 
         if self._auto_flip:
             pg.display.flip()

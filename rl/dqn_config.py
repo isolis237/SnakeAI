@@ -6,8 +6,8 @@ from typing import Literal, Optional
 class DQNConfig:
     """Hyperparameters and knobs for DQN-style algorithms."""
     gamma: float = 0.99
-    lr: float = 1e-3
-    batch_size: int = 64
+    lr: float = 1.5e-3
+    batch_size: int = 128
     replay_capacity: int = 100_000
     min_replay_before_learn: int = 10_000
     learn_every: int = 1                 # env steps per learner step (1 = every step)
@@ -20,6 +20,6 @@ class DQNConfig:
     prioritized_replay: bool = False     # interface placeholder
     epsilon_start: float = 1.0
     epsilon_end: float = 0.05
-    epsilon_decay_steps: int = 250_000
+    epsilon_decay_steps: int = 80_000
     device: str = "auto"
     seed: Optional[int] = None
