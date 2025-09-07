@@ -20,7 +20,7 @@ class TorchMLPQNet(nn.Module):  # <-- inherit from nn.Module
         self,
         obs_shape: Tuple[int, ...],
         num_actions: int,
-        hidden_sizes: Iterable[int] = (256, 256),
+        hidden_sizes: Iterable[int] = (256, 128, 64),
         dueling: bool = False,
         device: str = resolve_device("auto"),
     ) -> None:

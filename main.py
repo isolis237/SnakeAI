@@ -46,7 +46,7 @@ def parse_args():
     p.add_argument("--stream_ep_prob", type=float, default=.010)
     p.add_argument("--best_metric", choices=["reward","final_score"], default="reward")
     p.add_argument("--viewer_seed", type=int, default=0)
-    p.add_argument("--player_buffer", type=int, default=8,
+    p.add_argument("--player_buffer", type=int, default=4,
                help="Max complete episodes to buffer for the async player")
     p.add_argument("--player_gap", type=float, default=0.35,
                help="Pause (sec) between episodes in the viewer")

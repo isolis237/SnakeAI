@@ -66,9 +66,13 @@ def main(args):
             sink_player=player,
             grid_w=args.grid_w,
             grid_h=args.grid_h,
-            stream_episode_prob=args.stream_ep_prob,
+            stream_episode_prob=args.stream_ep_prob,   # keep your randomness
             best_metric=args.best_metric,
             rng_seed=args.viewer_seed,
+            recent_cap=8,      # small reservoir
+            min_fill=2,
+            target_fill=4,     # keep ~full
+            downsample_stride=2  # optional: halve cached frames
         )
 
     # --- Networks
@@ -92,7 +96,7 @@ def main(args):
 
     # --- Agent & Trainer
     agent = DQNAgent(q_net, target_net, replay, eps, cfg, optimizer)
-    agent.sync_target_hard()
+    agent.sync_target_soft()
 
     print("=== Snake DQN ===")
     print(f"grid: {args.grid_w}x{args.grid_h}  actions: {n_actions}  device: {args.device}")
@@ -129,12 +133,12 @@ def main(args):
         }
         logger.log(stats["step"], scalars)
 
-        print(f"[step {stats['step']:>7}] upd={stats['updates']:>6} "
-            f"loss={scalars['train/loss'] if scalars['train/loss'] is not None else float('nan'):.4f} "
-            f"eps={scalars['train/epsilon']:.3f} "
-            f"replay={scalars['train/replay_size']:>6} "
-            f"learn_started={int(scalars['train/learn_started'])} "
-            f"qμ={scalars['train/q_mean']:.3f} qmax={scalars['train/q_max']:.3f}")
+        # print(f"[step {stats['step']:>7}] upd={stats['updates']:>6} "
+        #     f"loss={scalars['train/loss'] if scalars['train/loss'] is not None else float('nan'):.4f} "
+        #     f"eps={scalars['train/epsilon']:.3f} "
+        #     f"replay={scalars['train/replay_size']:>6} "
+        #     f"learn_started={int(scalars['train/learn_started'])} "
+        #     f"qμ={scalars['train/q_mean']:.3f} qmax={scalars['train/q_max']:.3f}")
 
 
     def on_episode_end(ep, s):
@@ -158,9 +162,9 @@ def main(args):
         })
         logger.flush()
 
-        print(f"[episode {ep:>5}] step={step:>7}  R={er:7.3f} (EMA {r_ema:7.3f})  "
-              f"len={el:4d} (EMA {l_ema:7.2f})  score={s.get('final_score',0)}  "
-              f"death={s.get('death_reason')}")
+        # print(f"[episode {ep:>5}] step={step:>7}  R={er:7.3f} (EMA {r_ema:7.3f})  "
+        #       f"len={el:4d} (EMA {l_ema:7.2f})  score={s.get('final_score',0)}  "
+        #       f"death={s.get('death_reason')}")
 
     trainer = DQNTrainer(
         env,

@@ -36,23 +36,24 @@ class SnakeEnv(Env):
 
         # --- shaping state (unchanged) ---
         self._recent_heads = deque(maxlen=8)
-        self._prev_food_dist: float | None = None
-        self._steps_since_bite: int = 0
+        self._prev_food_dist = None
+        self._steps_since_bite = 0
+        self._streak = 0                 # NEW: consecutive apples since last death
+        self._T_starve = 200             # adjust ~ grid area; 12x12 → ~144–240
 
-        # --- reward knobs (kept here if no RewardAdapter is provided) ---
-        self._living_penalty      = -0.01
-        self._dist_gain_weight    =  0.08
-        self._dist_gain_scale     =  0.35
-        self._bite_base           =  1.15
-        self._bite_gain_per_pt    =  0.38
-        self._survive_per_step    =  0.002
-        self._terminal_score_w    =  0.15
-        self._loop_penalty        = -0.075
-        self._wall_death_extra       = -0.45
-        self._self_death_extra       = -0.15
-        self._starvation_death_extra = -0.2
-        self._post_bite_bonus_steps = 2
-        self._post_bite_step_bonus  = 0.02
+        # knobs (kept tight)
+        self._k_potential = 0.25         # potential shaping weight
+        self._step_cost   = -0.01        # small negative per step
+        self._bite_base   = 1.0
+        self._bite_streak = 0.25         # extra per current streak count
+        self._post_bite_bonus_steps = 3
+        self._post_bite_step_bonus  = 0.03
+        self._loop_penalty = -0.10
+        self._term_score_w = 0.15
+        self._death_wall_extra = -0.20
+        self._death_self_extra = -0.25
+        self._death_starv_extra = -0.10  # usually death reason marks 'starvation'
+        self._clip_lo, self._clip_hi = -1.5, 1.5
 
     # ---- Env Protocol ----
     def reset(self, *, seed: int | None = None) -> np.ndarray:
@@ -64,6 +65,7 @@ class SnakeEnv(Env):
         self._recent_heads.append(snap.snake[0])
         self._prev_food_dist = manhattan(snap.snake[0], snap.food)
         self._steps_since_bite = 0
+        self._streak = 0 
         return self._encode_obs(snap)
 
     def step(self, action: int) -> StepResult:
@@ -76,11 +78,14 @@ class SnakeEnv(Env):
 
         # trackers
         self._recent_heads.append(snap.snake[0])
-        self._prev_food_dist = manhattan(snap.snake[0], snap.food)
+        cur_dist = manhattan(snap.snake[0], snap.food)
         if snap.score > prev.score:
             self._steps_since_bite = 0
+            self._streak += 1             # streak increments on each apple
         else:
             self._steps_since_bite += 1
+
+        self._prev_food_dist = cur_dist
 
         # optional action mask
         mask = self._action_mask()
@@ -97,6 +102,7 @@ class SnakeEnv(Env):
         return 3 if self.rules.cfg.relative_actions else 4
 
     def observation_shape(self) -> tuple[int, ...]:
+        # By default returns (gridH, gridW, Channels) (ch3), else flattens
         H = self.rules.cfg.grid_h
         W = self.rules.cfg.grid_w
         if self._featurizer is not None:
@@ -146,6 +152,14 @@ class SnakeEnv(Env):
         C = 3 + (1 if self.include_walls else 0) + (2 if self.include_dir else 0)
         grid = np.zeros((H, W, C), dtype=np.float32)
 
+        # Obs shape is (gridH, gridW, channels) i.e. (12x12x6)
+        # c1 -> snake body excluding head
+        # c2 -> snake head
+        # c3 -> food
+        # c4 -> walls
+        # c5 -> DirX
+        # c6 -> DirY
+
         ch = 0
         for (x, y) in list(s.snake)[1:]:
             grid[y, x, ch] = 1.0
@@ -187,50 +201,54 @@ class SnakeEnv(Env):
             mask[reverse_i] = 0.0
         return mask
 
+    # ---- replace _reward() ----
     def _reward(self, prev: Snapshot, cur: Snapshot) -> float:
-        # --- terminal: base penalty + reason-specific extra + credit for achieved score ---
+        # Terminal
         if cur.terminated:
             extra = 0.0
-            # cur.reason typically in {'wall','self','starvation','manual'}
-            if cur.reason == 'wall':
-                extra += self._wall_death_extra
-            elif cur.reason == 'self':
-                extra += self._self_death_extra
-            elif cur.reason == 'starvation':
-                extra += self._starvation_death_extra
-            return -1.0 + extra + self._terminal_score_w * float(prev.score)
+            if cur.reason == 'wall':        extra += self._death_wall_extra
+            elif cur.reason == 'self':      extra += self._death_self_extra
+            elif cur.reason == 'starvation':extra += self._death_starv_extra
+            # credit prior score a bit so dying later while scoring is better than dying early
+            return np.clip(-1.0 + extra + self._term_score_w * float(prev.score),
+                        self._clip_lo, self._clip_hi)
 
-        # --- ate food: base + score-scaled bite bonus ---
-        if cur.score > prev.score:
-            return self._bite_base + self._bite_gain_per_pt * float(cur.score)
-
-        # --- shaped non-terminal step ---
         r = 0.0
-        r += self._living_penalty
-        r += self._survive_per_step * float(cur.score)
 
-        # distance shaping (score-scaled pull)
-        if self._prev_food_dist is not None:
-            new_dist = manhattan(cur.snake[0], cur.food)
-            delta = float(self._prev_food_dist - new_dist)  # + if closer, - if farther
-            dist_w = self._dist_gain_weight + self._dist_gain_scale * float(cur.score)
-            r += dist_w * delta
+        # Base per-step cost to discourage wandering/idling
+        r += self._step_cost
 
-        # loop / oscillation penalty (very small orbit -> penalize)
+        # Potential-based distance shaping (policy invariant)
+        # Φ(s) = -norm_dist(s), norm_dist ∈ [0,1]
+        H, W = cur.grid_h, cur.grid_w
+        Dmax = (H - 1) + (W - 1)
+        if self._prev_food_dist is not None and Dmax > 0:
+            d_prev = float(self._prev_food_dist) / Dmax
+            d_cur  = float(manhattan(cur.snake[0], cur.food)) / Dmax
+            # r_shape = k * (γ * Φ(s') - Φ(s)) = k * (d_prev - γ*d_cur)
+            r += self._k_potential * (self.rules.cfg.gamma * (-d_cur) - (-d_prev))
+            # algebraically same as: self._k_potential * (d_prev - γ*d_cur)
+
+        # Bite reward with streak bonus
+        if cur.score > prev.score:
+            r += self._bite_base + self._bite_streak * float(self._streak)
+            # small immediate post-bite momentum bonus (handled by steps_since_bite==0 below)
+
+        # Anti-looping: penalize tiny orbits
         if len(self._recent_heads) >= self._recent_heads.maxlen:
             if len(set(self._recent_heads)) <= 3:
                 r += self._loop_penalty
 
-        # --- new: post-bite streak encouragement (only if not looping) ---
-        # For N steps after eating, give a small decaying bonus if motion isn't looping.
-        steps = self._steps_since_bite
-        if steps <= self._post_bite_bonus_steps:
-            # consider "healthy movement" if we used at least 5 unique cells recently
-            unique = len(set(self._recent_heads))
-            if unique >= 5:
-                # linear decay: big right after bite, fades out
-                factor = (self._post_bite_bonus_steps - steps) / float(self._post_bite_bonus_steps)
-                r += self._post_bite_step_bonus * factor
+        # Post-bite burst encouragement (brief, decays)
+        s = self._steps_since_bite
+        if s <= self._post_bite_bonus_steps:
+            if len(set(self._recent_heads)) >= 5:           # avoid rewarding tight loops
+                r += self._post_bite_step_bonus * float(self._post_bite_bonus_steps - s)
 
-        r = max(-1.0, min(1.5, r))
-        return r
+        # Soft starvation ramp after half the threshold (optional)
+        if self._steps_since_bite > (self._T_starve // 2):
+            ramp = min(0.10, 0.005 * float(self._steps_since_bite - self._T_starve // 2))
+            r -= ramp
+
+        return float(np.clip(r, self._clip_lo, self._clip_hi))
+

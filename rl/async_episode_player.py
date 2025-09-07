@@ -75,6 +75,12 @@ class AsyncEpisodePlayer:
         try: self._sink.close()
         except Exception: pass
 
+    def qsize(self) -> int:
+        return self._q.qsize()
+
+    def capacity(self) -> int:
+        return self._q.maxsize
+
     def close(self) -> None:
         if not self._started: return
         self._stop.set()
