@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Tuple, Optional
 import random
 import numpy as np
-from .interfaces import Snapshot
+from interfaces import Snapshot
 
 @dataclass(frozen=True)
 class Config:
@@ -14,6 +14,7 @@ class Config:
     relative_actions: bool = True
     max_steps_without_food: Optional[int] = None
     seed: Optional[int] = None
+    gamma: float = 0.955
 
 class Rules:
     def __init__(self, cfg: Config):

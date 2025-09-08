@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from typing import List, Optional, Protocol
 import queue, threading, time
-from core.interfaces import Snapshot
+from interfaces import Snapshot
 
 class SnapshotSink(Protocol):
     def start(self, grid_w: int, grid_h: int) -> None: ...

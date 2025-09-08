@@ -1,7 +1,7 @@
 # snake/viz/renderer_headless.py
 from __future__ import annotations
-from snake.core.interfaces import Snapshot
-from .render_iface import Renderer, RenderConfig
+from interfaces import Snapshot
+from interfaces.render import RenderConfig, Renderer
 
 class HeadlessRenderer(Renderer):
     def open(self, grid_w: int, grid_h: int, cfg: RenderConfig) -> None:

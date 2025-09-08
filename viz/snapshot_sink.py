@@ -1,7 +1,7 @@
 # snake/viz/snapshot_sink.py
 from __future__ import annotations
 from typing import Protocol, Optional
-from core.interfaces import Snapshot
+from interfaces import Snapshot
 
 class SnapshotSink(Protocol):
     def start(self, grid_w: int, grid_h: int) -> None: ...

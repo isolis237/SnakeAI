@@ -4,8 +4,8 @@ from typing import Optional, Dict, Any
 import os, json
 import numpy as np
 
-from core.interfaces import Policy
-from .dqn_config import DQNConfig
+from interfaces import Policy
+from config import DQNConfig
 from .networks import QNetwork
 from .replay import ReplayBuffer, Transition
 from .schedulers import EpsilonScheduler

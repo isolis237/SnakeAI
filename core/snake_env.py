@@ -3,10 +3,9 @@ from __future__ import annotations
 from collections import deque
 from typing import Optional, Dict, Any, Tuple
 import numpy as np
-from .interfaces import Env, StepResult, Snapshot
+from interfaces import Env, StepResult, Snapshot
 from .snake_rules import Rules, Config
-from .feature_iface import Featurizer
-from .reward_iface import RewardAdapter
+from interfaces import Featurizer, RewardAdapter
 
 def manhattan(a, b):
     return abs(a[0]-b[0]) + abs(a[1]-b[1])

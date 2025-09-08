@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional, Dict, Any, List
 import random, threading, time
 from collections import deque
-from core.interfaces import Snapshot
+from interfaces import Snapshot
 from rl.async_episode_player import AsyncEpisodePlayer  # NEW
 
 class LiveRenderHook:

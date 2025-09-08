@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 import pygame as pg
 from typing import Optional
-from core.interfaces import Snapshot
+from interfaces import Snapshot
 import viz.renderer_colors as theme  # keep your existing module
-from .render_iface import Renderer, RenderConfig
+from interfaces.render import Renderer
+from config import RenderConfig
 
 class PygameRenderer(Renderer):
     def __init__(self):

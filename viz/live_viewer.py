@@ -2,10 +2,10 @@
 from __future__ import annotations
 import multiprocessing as mp
 from typing import Optional, Tuple, Any
-from core.interfaces import Snapshot
-from viz.snapshot_sink import SnapshotSink
+from interfaces import Snapshot
+from config import RenderConfig
 from viz.renderer_pygame import PygameRenderer
-from viz.render_iface import RenderConfig
+from viz.snapshot_sink import SnapshotSink
 
 Msg = Tuple[str, Any]  # ("frame", Snapshot) or ("overlay", str) or ("quit", None)
 
