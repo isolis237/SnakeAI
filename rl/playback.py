@@ -137,14 +137,12 @@ class LiveHook:
         self,
         player: EpisodeQueuePlayer,
         recorder: EpisodeRecorder,
-        grid_w: int,
-        grid_h: int,
-        keep_best_by: str = "reward",  # or "final_score"
+        cfg: AppConfig
     ):
         self._player = player
         self._rec = recorder
-        self._grid_w, self._grid_h = grid_w, grid_h
-        self._best_key = keep_best_by
+        self._grid_w, self._grid_h = cfg.grid_w, cfg.grid_h
+        self._best_key = cfg.best_metric
         self._best_val = float("-inf")
         self._best_ep: Optional[Episode] = None
         self._started = False

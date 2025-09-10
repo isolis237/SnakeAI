@@ -1,12 +1,13 @@
 from __future__ import annotations
 import csv, os, time
-from typing import Dict, Any, Protocol, Optional
+from typing import Dict, Any, Protocol, Optional, Callable
 
 ALL_KEYS = [
     "step",
     # train
     "train/loss", "train/epsilon", "train/replay_size",
-    "train/q_mean", "train/q_max", "train/q_min", "train/updates",
+    "train/q_mean", "train/q_max", "train/q_min", "train/updates", "train/grad_norm",
+    "train/learn_started", "train/replay_fill",
     # episode
     "epis/reward", "epis/reward_ema", "epis/reward_mean100",
     "epis/len", "epis/len_ema", "epis/len_mean100",
@@ -51,39 +52,89 @@ class CSVLogger:
         except Exception:
             pass
 
-class TBLogger:
-    """Tiny TensorBoard logger (optional dependency)."""
-    def __init__(self, logdir: str):
-        os.makedirs(logdir, exist_ok=True)
-        try:
-            from torch.utils.tensorboard import SummaryWriter  # type: ignore
-        except Exception as e:
-            raise RuntimeError("TensorBoard is not available") from e
-        self.w = SummaryWriter(log_dir=logdir)
-        self._start = time.time()
+def make_step_logger(
+    logger: Logger,
+    warmup: int,
+    log_every_updates: int = 10,
+    also_every_steps: int = 200,
+) -> Callable[[dict], None]:
+    """
+    Returns a function(stats: Dict[str, Any]) -> None that logs training scalars
+    at a controlled cadence. Decouples 'main' from logging policy.
+    """
+    def _on_step_log(stats: Dict[str, Any]) -> None:
+        # “cadence” rule: every N updates, and occasionally every M steps
+        if stats.get("updates", 0) % log_every_updates != 0 and stats.get("step", 0) % also_every_steps != 0:
+            return
 
-    def log(self, step: int, scalars: Dict[str, Any]) -> None:
-        for k, v in scalars.items():
-            # Only scalar-friendly values
-            if isinstance(v, (int, float)):
-                self.w.add_scalar(k, v, step)
+        scalars = {
+            "train/loss": stats.get("loss"),
+            "train/epsilon": stats.get("epsilon"),
+            "train/replay_size": stats.get("replay_size"),
+            "train/q_mean": stats.get("q_mean"),
+            "train/q_max": stats.get("q_max"),
+            "train/q_min": stats.get("q_min"),
+            "train/updates": stats.get("updates"),
+            "train/grad_norm": stats.get("grad_norm"),
+            "train/learn_started": 1.0 if stats.get("replay_size", 0) >= warmup else 0.0,
+            "train/replay_fill": stats.get("replay_size"),
+        }
+        # guard: require 'step' to be present for CSV ‘step’ column
+        step = stats.get("step")
+        if step is None:
+            return
+        logger.log(int(step), scalars)
+    return _on_step_log
 
-    def flush(self) -> None:
-        self.w.flush()
+def make_episode_logger(
+    *,
+    logger: Logger,
+    ema_reward,
+    ema_length,
+    win_reward,
+    win_length,
+    step_getter: Callable[[], int],
+    # Optional checkpoint hooks to avoid importing Checkpointer here:
+    ckpt_periodic: Optional[Callable[[int], None]] = None,
+    ckpt_best: Optional[Callable[[Dict[str, Any]], None]] = None,
+):
+    """
+    Returns a function(ep: int, s: Dict[str, Any]) -> None that:
+      - updates EMA/window stats
+      - logs all episode metrics
+      - optionally triggers checkpoint hooks
 
-    def close(self) -> None:
-        self.w.flush(); self.w.close()
+    'step_getter' should return the global training step for the CSV 'step' column.
+    """
+    def _on_episode_end(ep: int, s: Dict[str, Any]) -> None:
+        er, el = float(s["reward"]), int(s["steps"])
+        r_ema = ema_reward.update(er)
+        l_ema = ema_length.update(el)
 
-class MultiLogger:
-    """Fan-out to multiple loggers."""
-    def __init__(self, *loggers: Logger):
-        self._loggers = list(loggers)
-    def log(self, step: int, scalars: Dict[str, Any]) -> None:
-        for lg in self._loggers:
-            lg.log(step, scalars)
-    def flush(self) -> None:
-        for lg in self._loggers:
-            lg.flush()
-    def close(self) -> None:
-        for lg in self._loggers:
-            lg.close()
+        win_reward.add(er); win_length.add(el)
+        wr, wl = win_reward.summary(), win_length.summary()
+
+        scalars = {
+            "episode": ep,
+            "epis/reward": er,
+            "epis/reward_ema": r_ema,
+            "epis/reward_mean100": wr["mean"],
+            "epis/len": el,
+            "epis/len_ema": l_ema,
+            "epis/len_mean100": wl["mean"],
+            "epis/final_score": s.get("final_score", 0),
+            "epis/death_wall": 1.0 if s.get("death_reason") == "wall" else 0.0,
+            "epis/death_self": 1.0 if s.get("death_reason") == "self" else 0.0,
+            "epis/death_starvation": 1.0 if s.get("death_reason") == "starvation" else 0.0,
+        }
+
+        step = int(step_getter())
+        logger.log(step, scalars)
+        logger.flush()
+
+        if ckpt_periodic is not None:
+            ckpt_periodic(ep)
+        if ckpt_best is not None:
+            ckpt_best(scalars)
+
+    return _on_episode_end

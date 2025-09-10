@@ -25,6 +25,7 @@ class AppConfig:
     # live_view
     live_view = True
     max_episodes_buffered = 4
+    queue_max = 4
     stream_ep_prob = .01
     best_metric = "score"
 
@@ -50,8 +51,6 @@ class AppConfig:
     epsilon_decay_steps: int = 85_000
     device: str = "cuda"
     seed: Optional[int] = None
-
-    # RingBuffer
 
 
     def with_(self, **kwargs) -> "AppConfig":

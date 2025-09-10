@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Dict, Any
 from core.interfaces import Env, Transition
 from .dqn_agent import DQNAgent
-from rl.logging import CSVLogger, TBLogger, MultiLogger
+from rl.logging import CSVLogger
 from rl.metrics import EMA, WindowedStat
 
 LogFn = Callable[[Dict[str, Any]], None]
