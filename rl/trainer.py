@@ -1,10 +1,9 @@
+# rl/trainer.py
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional, Dict, Any
 from core.interfaces import Env, Transition
 from .dqn_agent import DQNAgent
-from rl.logging import CSVLogger
-from rl.metrics import EMA, WindowedStat
 
 LogFn = Callable[[Dict[str, Any]], None]
 
@@ -15,39 +14,31 @@ class TrainHooks:
     on_eval_end: Optional[Callable[[int, Dict[str, Any]], None]] = None
 
 class DQNTrainer:
-    """
-    Thin, testable loop coordinator. Keeps training loop separate from agent logic.
-    """
     def __init__(
         self,
         env: Env,
         agent: DQNAgent,
         hooks: Optional[TrainHooks] = None,
         max_steps_per_episode: Optional[int] = None,
-        render_every: Optional[int] = None,  # if you want to render periodically
-        live_hook: Optional[Any] = None
+        render_every: Optional[int] = None,
+        live_hook: Optional[Any] = None,
     ):
         self.env = env
         self.agent = agent
         self.hooks = hooks or TrainHooks()
         self.max_steps_per_episode = max_steps_per_episode
-        self.render_every = render_every
+        self.render_every = max(1, int(render_every)) if render_every else 1
         self.live_hook = live_hook
 
     def train_and_stream(self, num_episodes: int) -> None:
-        """
-        Train while producing full-episode streams/recordings.
-        This does NOT block on rendering: the trainer only *collects* snapshots
-        and hands them to the live_hook (which may be an async episode player).
-        """
-        if self.live_hook is not None:
+        # Start live hook once if present
+        if self.live_hook is not None and hasattr(self.live_hook, "ensure_started"):
             self.live_hook.ensure_started()
 
         try:
             for ep in range(num_episodes):
-                # Announce the episode so the hook decides whether to record/stream it.
-                if self.live_hook is not None:
-                    self.live_hook.on_episode_start(ep)
+                if self.live_hook is not None and hasattr(self.live_hook, "start_episode"):
+                    self.live_hook.start_episode(ep)
 
                 obs = self.env.reset()
                 done = False
@@ -55,15 +46,11 @@ class DQNTrainer:
                 ep_reward = 0.0
                 last_step = None
 
-                # Record the initial state if this episode is selected.
-                if self.live_hook is not None and self.live_hook.is_streaming():
+                # initial frame
+                if self.live_hook is not None and hasattr(self.live_hook, "record_snapshot"):
                     try:
                         snap0 = self.env.get_snapshot()
-                        # Prefer new API if available
-                        if hasattr(self.live_hook, "collect_snapshot"):
-                            self.live_hook.collect_snapshot(snap0)
-                        else:
-                            self.live_hook.maybe_render(None, {"snapshot": snap0})
+                        self.live_hook.record_snapshot(snap0)
                     except Exception:
                         pass
 
@@ -82,17 +69,14 @@ class DQNTrainer:
                     if stats and self.hooks.on_step_log:
                         self.hooks.on_step_log(stats)
 
-                    # Record a snapshot for THIS step if we’re streaming/recording this episode.
-                    if self.live_hook is not None and self.live_hook.is_streaming():
-                        try:
-                            snap = self.env.get_snapshot()
-                            if hasattr(self.live_hook, "collect_snapshot"):
-                                self.live_hook.collect_snapshot(snap)
-                            else:
-                                # Back-compat with your original hook
-                                self.live_hook.maybe_render(None, {"snapshot": snap})
-                        except Exception:
-                            pass
+                    # capture snapshot every N steps (let hook decide whether to store)
+                    if self.live_hook is not None and (steps % self.render_every == 0):
+                        if hasattr(self.live_hook, "record_snapshot"):
+                            try:
+                                snap = self.env.get_snapshot()
+                                self.live_hook.record_snapshot(snap)
+                            except Exception:
+                                pass
 
                     # episode bookkeeping
                     obs = step.obs
@@ -104,41 +88,31 @@ class DQNTrainer:
                         break
 
                 final_info = (last_step.info if last_step is not None else {}) or {}
-                final_reason = final_info.get("reason")
-                final_score  = final_info.get("score", 0)
+                summary = {
+                    "steps": steps,
+                    "reward": ep_reward,
+                    "final_score": final_info.get("score", 0),
+                    "death_reason": final_info.get("reason"),
+                }
 
-                # Let the hook enqueue or finalize the episode
-                if self.live_hook is not None:
-                    self.live_hook.on_episode_end({
-                        "steps": steps,
-                        "reward": ep_reward,
-                        "final_score": final_score,
-                        "death_reason": final_reason,
-                    }, final_info)
+                if self.live_hook is not None and hasattr(self.live_hook, "end_episode"):
+                    self.live_hook.end_episode(summary, final_info)
 
-                # Your logging callbacks
                 if self.hooks.on_episode_end:
-                    self.hooks.on_episode_end(ep, {
-                        "steps": steps,
-                        "reward": ep_reward,
-                        "final_score": final_score,
-                        "death_reason": final_reason,
-                    })
+                    self.hooks.on_episode_end(ep, summary)
 
-            # Optional: replay best after the last episode is done
-            if self.live_hook is not None:
+            if self.live_hook is not None and hasattr(self.live_hook, "replay_best_and_wait"):
+                self.live_hook.replay_best_and_wait(timeout=15.0)
+            elif self.live_hook is not None and hasattr(self.live_hook, "replay_best"):
+                # fallback: non-blocking, may still get cut if you close immediately
                 self.live_hook.replay_best()
 
         finally:
-            # Ensure viewer/resources are closed even if training errors out.
-            if self.live_hook is not None:
+            if self.live_hook is not None and hasattr(self.live_hook, "close"):
                 try:
-                    # If using the async player LiveRenderHook, this will drain & close cleanly.
                     self.live_hook.close()
                 except Exception:
                     pass
-
-
 
 
     def train(self, num_episodes: int) -> None:
