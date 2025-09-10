@@ -160,6 +160,10 @@ class DQNAgent(Policy):
     def eval_mode(self) -> None:
         self.q_net.eval(); self.target_net.eval()
 
+    def act_greedy(self, obs: np.ndarray) -> int:
+        q = self.q_net.q_values(obs[None, ...])
+        return int(np.argmax(q[0]))
+
     # ------------- Checkpointing -------------
     def get_state(self) -> Dict[str, Any]:
         return {
@@ -206,3 +210,9 @@ class DQNAgent(Policy):
                 self.optimizer.load_state_dict(torch.load(os.path.join(dirpath, f"{tag}_optim.pt"), map_location=self.cfg.device))
         except Exception:
             pass
+
+    def load_weights_only(self, dirpath: str, tag: str = "dqn") -> None:
+        import os, torch
+        self.q_net.load_weights(os.path.join(dirpath, f"{tag}_online.pt"))
+        self.target_net.load_weights(os.path.join(dirpath, f"{tag}_target.pt"))
+        # Optimizer is not needed for playback; skip for safety

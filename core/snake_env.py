@@ -4,9 +4,10 @@ from collections import deque
 from typing import Optional, Dict, Any, Tuple
 import numpy as np
 from .interfaces import Env, StepResult, Snapshot
-from .snake_rules import Rules, Config
+from .snake_rules import Rules
 from .feature_iface import Featurizer
 from .reward_iface import RewardAdapter
+from config import AppConfig
 
 def manhattan(a, b):
     return abs(a[0]-b[0]) + abs(a[1]-b[1])
@@ -14,6 +15,7 @@ def manhattan(a, b):
 class SnakeEnv(Env):
     def __init__(
         self,
+        cfg: AppConfig,
         rules: Rules,
         obs_mode: str = "ch3",
         reward_mode: str = "basic",
@@ -103,8 +105,8 @@ class SnakeEnv(Env):
 
     def observation_shape(self) -> tuple[int, ...]:
         # By default returns (gridH, gridW, Channels) (ch3), else flattens
-        H = self.rules.cfg.grid_h
-        W = self.rules.cfg.grid_w
+        H = self.cfg.grid_h
+        W = self.cfg.grid_w
         if self._featurizer is not None:
             return self._featurizer.shape(H, W)
         C = 3 + (1 if self.include_walls else 0) + (2 if self.include_dir else 0)
@@ -217,17 +219,6 @@ class SnakeEnv(Env):
 
         # Base per-step cost to discourage wandering/idling
         r += self._step_cost
-
-        # Potential-based distance shaping (policy invariant)
-        # Φ(s) = -norm_dist(s), norm_dist ∈ [0,1]
-        H, W = cur.grid_h, cur.grid_w
-        Dmax = (H - 1) + (W - 1)
-        if self._prev_food_dist is not None and Dmax > 0:
-            d_prev = float(self._prev_food_dist) / Dmax
-            d_cur  = float(manhattan(cur.snake[0], cur.food)) / Dmax
-            # r_shape = k * (γ * Φ(s') - Φ(s)) = k * (d_prev - γ*d_cur)
-            r += self._k_potential * (self.rules.cfg.gamma * (-d_cur) - (-d_prev))
-            # algebraically same as: self._k_potential * (d_prev - γ*d_cur)
 
         # Bite reward with streak bonus
         if cur.score > prev.score:

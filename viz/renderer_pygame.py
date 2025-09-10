@@ -1,75 +1,69 @@
-# snake/viz/renderer_pygame.py
+# viz/renderer_pygame.py
 from __future__ import annotations
 import os
+from pathlib import Path
 import pygame as pg
-from typing import Optional
+from typing import Optional, Union
+from config import AppConfig
 from core.interfaces import Snapshot
-import viz.renderer_colors as theme  # keep your existing module
-from .render_iface import Renderer, RenderConfig
+import viz.renderer_colors as theme
 
-class PygameRenderer(Renderer):
+PathLike = Union[str, bytes, os.PathLike]
+
+class PygameRenderer:
     def __init__(self):
         self.cell = 24
+        self.cfg: Optional[AppConfig] = None
         self.surf: Optional[pg.Surface] = None
         self.clock: Optional[pg.time.Clock] = None
         self._auto_flip = True
         self._grid_w = 0
         self._grid_h = 0
-        self._cfg = RenderConfig()
         self._frame_idx = 0
         self._overlay_text: Optional[str] = None
 
     def set_overlay(self, text: Optional[str]) -> None:
         self._overlay_text = text or ""
 
-    # --- Protocol: open / draw / tick / close / save_frame ---
-    def open(self, grid_w: int, grid_h: int, cfg: RenderConfig) -> None:
-        self._grid_w, self._grid_h = grid_w, grid_h
-        self._cfg = cfg
-        self.cell = cfg.cell_px
+    def open(self, cfg: AppConfig) -> None:
+        # Guard: ensure instance, not class
+        if isinstance(cfg, type):
+            raise TypeError("Pass an AppConfig instance (use AppConfig()), not the class.")
+        self.cfg = cfg  # <<< STORE IT
+
+        self._grid_w, self._grid_h = cfg.grid_w, cfg.grid_h
+        self.cell = cfg.render_cell
 
         pg.init()
-        pg.display.set_caption(cfg.title)
-        self.surf = pg.display.set_mode((grid_w * self.cell, grid_h * self.cell))
+        pg.display.set_caption(cfg.render_title)
+        self.surf = pg.display.set_mode((self._grid_w * self.cell, self._grid_h * self.cell))
         self.clock = pg.time.Clock()
         self._auto_flip = True
         self._frame_idx = 0
 
-        if cfg.record_dir:
-            os.makedirs(cfg.record_dir, exist_ok=True)
+        if cfg.render_record_dir:
+            os.makedirs(cfg.render_record_dir, exist_ok=True)
 
     def draw(self, s: Snapshot) -> None:
         assert self.surf is not None, "Renderer not opened"
+        assert self.cfg is not None, "Renderer config not set (call open first)"
         surf = self.surf
         c = self.cell
 
-        # basic event pump so the window stays responsive
         for event in pg.event.get():
             if event.type == pg.QUIT:
-                # don’t quit process here; caller controls loop
                 pass
 
-        # background
         surf.fill(theme.BG)
 
-        # optional gridlines
-        if self._cfg.grid_lines:
-            for x in range(0, self._grid_w * c, c):
-                pg.draw.line(surf, theme.GRID, (x, 0), (x, self._grid_h * c))
-            for y in range(0, self._grid_h * c, c):
-                pg.draw.line(surf, theme.GRID, (0, y), (self._grid_w * c, y))
-
-        # food
         fx, fy = s.food
         pg.draw.rect(surf, theme.FOOD, pg.Rect(fx * c, fy * c, c, c))
 
-        # snake (head, then body)
         for i, (x, y) in enumerate(s.snake):
             col = theme.HEAD if i == 0 else theme.BODY
             pg.draw.rect(surf, col, pg.Rect(x * c, y * c, c, c))
 
-        # HUD
-        if self._cfg.show_hud:
+        if self.cfg.render_show_hud:
             font = pg.font.SysFont(None, 22)
             txt = font.render(
                 f"Score: {s.score}   Steps: {s.step_count}   Dir: {s.dir}   Reason: {s.reason or ''}",
@@ -80,14 +74,12 @@ class PygameRenderer(Renderer):
         if self._overlay_text:
             font = pg.font.SysFont(None, 22)
             ovr = font.render(self._overlay_text, True, theme.TEXT)
-            # place below the HUD or in top-right; here: top-left, line 2
             surf.blit(ovr, (6, 26))
 
         if self._auto_flip:
             pg.display.flip()
 
-        # optional recording
-        if self._cfg.record_dir:
+        if self.cfg.render_record_dir:
             self._save_surface_frame()
 
     def tick(self, fps: int) -> None:
@@ -97,16 +89,26 @@ class PygameRenderer(Renderer):
     def close(self) -> None:
         try:
             pg.quit()
-        except Exception:
-            pass
-        self.surf = None
-        self.clock = None
+        finally:
+            self.surf = None
+            self.clock = None
 
     def save_frame(self, s: Snapshot) -> None:
-        """Force-save a frame of the *current* surface contents (after draw)."""
-        if not self._cfg.record_dir or self.surf is None:
+        assert self.cfg is not None, "Renderer config not set (call open first)"
+        if not self.cfg.render_record_dir or self.surf is None:
             return
         self._save_surface_frame()
+
+    # internals
+    def _save_surface_frame(self) -> None:
+        assert self.surf is not None
+        assert self.cfg is not None
+        rec_dir: PathLike = self.cfg.render_record_dir
+        if not isinstance(rec_dir, (str, bytes, os.PathLike)):
+            raise TypeError(f"render_record_dir must be path-like, got {type(rec_dir)}")
+        fname = os.path.join(rec_dir, f"frame_{self._frame_idx:06d}.png")
+        pg.image.save(self.surf, fname)
+        self._frame_idx += 1
 
     # --- Backward-compat helpers (optional) ---
     def create_window(self, w: int, h: int, title: str = "Snake") -> None:
@@ -119,10 +121,3 @@ class PygameRenderer(Renderer):
         self.surf = surface
         self.clock = None  # embedding surface typically controls timing
         self._auto_flip = False
-
-    # --- internals ---
-    def _save_surface_frame(self) -> None:
-        assert self.surf is not None
-        fname = os.path.join(self._cfg.record_dir, f"frame_{self._frame_idx:06d}.png")
-        pg.image.save(self.surf, fname)
-        self._frame_idx += 1

@@ -5,7 +5,8 @@ from typing import Optional, Tuple, Any
 from core.interfaces import Snapshot
 from viz.snapshot_sink import SnapshotSink
 from viz.renderer_pygame import PygameRenderer
-from viz.render_iface import RenderConfig
+
+from config import AppConfig
 
 Msg = Tuple[str, Any]  # ("frame", Snapshot) or ("overlay", str) or ("quit", None)
 
@@ -13,13 +14,7 @@ def _viewer_proc(q: mp.Queue, grid_w: int, grid_h: int, fps: int,
                  record_dir: Optional[str], title: str, cell_px: int,
                  grid_lines: bool, show_hud: bool):
     ren = PygameRenderer()
-    ren.open(grid_w, grid_h, RenderConfig(
-        cell_px=cell_px,
-        title=title,
-        grid_lines=grid_lines,
-        show_hud=show_hud,
-        record_dir=record_dir,
-    ))
+    ren.open(AppConfig())
     try:
         while True:
             msg: Msg = q.get()

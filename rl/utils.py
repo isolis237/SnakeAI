@@ -14,3 +14,7 @@ def resolve_device(pref: str | None = "auto") -> str:
             return "mps"
         return "cpu"
     return pref
+
+DIRS = [(1,0),(0,1),(-1,0),(0,-1)]
+def dir_to_abs(cur_dir): 
+    return DIRS.index(cur_dir)

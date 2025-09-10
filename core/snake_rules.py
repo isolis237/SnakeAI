@@ -5,19 +5,12 @@ from typing import Tuple, Optional
 import random
 import numpy as np
 from .interfaces import Snapshot
-
-@dataclass(frozen=True)
-class Config:
-    grid_w: int = 12
-    grid_h: int = 12
-    start_len: int = 3
-    relative_actions: bool = True
-    max_steps_without_food: Optional[int] = None
-    seed: Optional[int] = None
+from config import AppConfig
 
 class Rules:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: AppConfig):
         self.cfg = cfg
+        print(cfg.seed)
         self.rng = random.Random(cfg.seed)
         self._reset_state()
 
