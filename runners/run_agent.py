@@ -1,10 +1,10 @@
 from __future__ import annotations
 import argparse
 
-from core.snake_rules import Rules as SnakeCfg
+from config import AppConfig
+from core.snake_rules import Rules
+
 from core.snake_env import SnakeEnv
-from rl.dqn_config import DQNConfig
-from rl.schedulers import LinearDecayEpsilon
 from rl.dqn_agent import DQNAgent
 from rl.trainer import DQNTrainer, TrainHooks
 from rl.logging import CSVLogger, TBLogger, MultiLogger
@@ -14,13 +14,14 @@ from rl.torch_net import TorchMLPQNet
 from rl.ring_buffer import RingBuffer
 from rl.checkpoint import Checkpointer
 
-from rl.utils import resolve_device
+from rl.utils import resolve_device, LinearDecayEpsilon
 
 from rl.async_episode_player import AsyncEpisodePlayer
-from rl.hooks_live import LiveRenderHook 
 from viz.live_viewer import LiveViewer
 
 import torch
+
+from rl.playback import EpisodeRecorder, EpisodeQueuePlayer, LiveHook
 
 ALL_KEYS = [
     "step",
@@ -33,66 +34,48 @@ ALL_KEYS = [
 ]
 
 
-def main(args):
-    # --- Env
-    env = SnakeEnv(Rules(SnakeCfg(
-        grid_w=args.grid_w,
-        grid_h=args.grid_h,
-        relative_actions=True,
-        seed=args.seed
-    )))
+def main():
+    cfg = AppConfig()
+    rules = Rules(cfg)
+
+    cfg.with_(relative_actions=True)
+    env = SnakeEnv(cfg, rules)
+
     obs_shape = env.observation_shape()
     n_actions = env.action_space_n()
 
     # --- Live view (optional)
     live_hook = None
-    if args.live_view:
-        # Sink (pygame window, video writer, etc.) – used only by the player thread
+    if cfg.live_view:
         sink = LiveViewer(
-            fps=args.view_fps,            # playback FPS (not training speed)
-            record_dir=args.record_dir,
+            fps=cfg.fps,
+            record_dir=cfg.render_record_dir,
             title="Snake — Training",
-            cell_px=args.cell_px,
-            grid_lines=args.grid_lines,
-            show_hud=not args.hide_hud,
+            cell_px=cfg.render_cell,
+            grid_lines=cfg.render_grid_lines,
+            show_hud=cfg.render_show_hud,
+            queue_max=8,
         )
-        # Player thread that replays *complete* episodes at a steady FPS
-        player = AsyncEpisodePlayer(
-            sink,
-            fps=args.view_fps,
-            max_episodes_buffered=args.player_buffer
-        )
-        # Hook that RECORDS frames during the episode and enqueues at end
-        live_hook = LiveRenderHook(
-            sink_player=player,
-            grid_w=args.grid_w,
-            grid_h=args.grid_h,
-            stream_episode_prob=args.stream_ep_prob,   # keep your randomness
-            best_metric=args.best_metric,
-            rng_seed=args.viewer_seed,
-            recent_cap=8,      # small reservoir
-            min_fill=2,
-            target_fill=4,     # keep ~full
-            downsample_stride=2  # optional: halve cached frames
+        player = EpisodeQueuePlayer(sink=sink, fps=cfg.fps, max_queue=8)
+        rec    = EpisodeRecorder(stream_prob=cfg.stream_ep_prob, rng_seed=cfg.seed)
+
+        live_hook = LiveHook(
+            player=player,
+            recorder=rec,
+            grid_w=cfg.grid_w,
+            grid_h=cfg.grid_h,
+            keep_best_by=cfg.best_metric,   # "reward" or "final_score"
         )
 
     # --- Networks
-    q_net = TorchMLPQNet(obs_shape, n_actions, dueling=args.dueling, device=args.device)
-    target_net = TorchMLPQNet(obs_shape, n_actions, dueling=args.dueling, device=args.device)
+    q_net = TorchMLPQNet(obs_shape, n_actions, dueling=cfg.dueling, device=cfg.device)
+    target_net = TorchMLPQNet(obs_shape, n_actions, dueling=cfg.dueling, device=cfg.device)
 
     # --- Replay & epsilon
-    replay = RingBuffer(capacity=args.cap, seed=args.seed)
-    eps = LinearDecayEpsilon(DQNConfig.epsilon_start, DQNConfig.epsilon_end, DQNConfig.epsilon_decay_steps)
+    replay = RingBuffer(capacity=cfg.replay_capacity, seed=cfg.seed)
+    eps = LinearDecayEpsilon(cfg.epsilon_start, cfg.epsilon_end, cfg.epsilon_decay_steps)
 
-    # --- Config & optimizer
-    cfg = DQNConfig(
-        batch_size=args.batch,
-        lr=args.lr,
-        min_replay_before_learn=args.warmup,
-        device=args.device,
-        double_dqn=True,
-        dueling=args.dueling,
-    )
+    # --- Optimizer
     optimizer = torch.optim.Adam(q_net.parameters(), lr=cfg.lr)
 
     # --- Agent & Trainer
@@ -108,9 +91,9 @@ def main(args):
     )
 
     print("=== Snake DQN ===")
-    print(f"grid: {args.grid_w}x{args.grid_h}  actions: {n_actions}  device: {args.device}")
-    print(f"episodes: {args.episodes}  batch: {args.batch}  lr: {args.lr}")
-    print(f"replay cap: {args.cap}  warmup: {args.warmup}  dueling: {args.dueling}")
+    print(f"grid: {cfg.grid_w}x{cfg.grid_h}  actions: {n_actions}  device: {cfg.device}")
+    print(f"episodes: {cfg.episodes}  batch: {cfg.batch_size}  lr: {cfg.lr}")
+    print(f"replay cap: {cfg.replay_capacity}  warmup: {cfg.warmup}  dueling: {cfg.dueling}")
     print("logs: runs/snake_dqn/logs.csv  tb: runs/snake_dqn/tb")
 
     logger = CSVLogger("runs/snake_dqn/logs.csv", fieldnames=ALL_KEYS)
@@ -132,7 +115,7 @@ def main(args):
             "train/q_min": stats.get("q_min"),
             "train/updates": stats.get("updates"),
             "train/grad_norm": stats.get("grad_norm"),
-            "train/learn_started": 1.0 if stats.get("replay_size", 0) >= args.warmup else 0.0,
+            "train/learn_started": 1.0 if stats.get("replay_size", 0) >= cfg.warmup else 0.0,
             "train/replay_fill": stats.get("replay_size"),
         }
         logger.log(stats["step"], scalars)
@@ -169,16 +152,11 @@ def main(args):
         env,
         agent,
         TrainHooks(on_step_log=on_step_log, on_episode_end=on_episode_end),
-        max_steps_per_episode=(args.max_ep_steps or None),
+        max_steps_per_episode=(cfg.max_ep_steps or None),
         live_hook=live_hook
     )
 
     # Train + stream/record full episodes (decoupled playback if async hook is used)
-    trainer.train_and_stream(num_episodes=args.episodes)
+    trainer.train_and_stream(num_episodes=cfg.episodes)
     ckpt.save_final()
     logger.close()
-
-
-
-if __name__ == "__main__":
-    main()

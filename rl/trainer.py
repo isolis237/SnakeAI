@@ -1,9 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional, Dict, Any
-from core.interfaces import Env
+from core.interfaces import Env, Transition
 from .dqn_agent import DQNAgent
-from .replay import Transition
 from rl.logging import CSVLogger, TBLogger, MultiLogger
 from rl.metrics import EMA, WindowedStat
 

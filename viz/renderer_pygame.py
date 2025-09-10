@@ -29,7 +29,7 @@ class PygameRenderer:
         # Guard: ensure instance, not class
         if isinstance(cfg, type):
             raise TypeError("Pass an AppConfig instance (use AppConfig()), not the class.")
-        self.cfg = cfg  # <<< STORE IT
+        self.cfg = cfg  
 
         self._grid_w, self._grid_h = cfg.grid_w, cfg.grid_h
         self.cell = cfg.render_cell

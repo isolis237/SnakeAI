@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .networks import QNetwork  # protocol (structural typing, no inheritance needed)
+from core.interfaces import QNetwork
 from .utils import resolve_device
 
 class TorchMLPQNet(nn.Module):  # <-- inherit from nn.Module

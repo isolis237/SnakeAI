@@ -1,5 +1,6 @@
 # snake/rl/utils.py
 from __future__ import annotations
+from typing import Protocol
 import torch
 
 def resolve_device(pref: str | None = "auto") -> str:
@@ -18,3 +19,16 @@ def resolve_device(pref: str | None = "auto") -> str:
 DIRS = [(1,0),(0,1),(-1,0),(0,-1)]
 def dir_to_abs(cur_dir): 
     return DIRS.index(cur_dir)
+
+
+class EpsilonScheduler(Protocol):
+    def value(self, global_step: int) -> float: ...
+
+class LinearDecayEpsilon(EpsilonScheduler):
+    """Simple working default. Feel free to swap later."""
+    def __init__(self, start: float, end: float, steps: int):
+        self.start = start; self.end = end; self.steps = max(1, steps)
+    def value(self, global_step: int) -> float:
+        t = min(global_step, self.steps)
+        return self.start + (self.end - self.start) * (t / self.steps)
+

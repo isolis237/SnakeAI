@@ -2,14 +2,7 @@
 from dataclasses import dataclass
 from typing import List, Optional, Protocol
 import queue, threading, time
-from core.interfaces import Snapshot
-
-class SnapshotSink(Protocol):
-    def start(self, grid_w: int, grid_h: int) -> None: ...
-    def push(self, snap: Snapshot) -> None: ...
-    def close(self) -> None: ...
-    # OPTIONAL (we'll check with hasattr):
-    # def set_overlay(self, text: str) -> None: ...
+from core.interfaces import Snapshot, SnapshotSink
 
 @dataclass
 class _WorkItem:

@@ -1,7 +1,12 @@
 from __future__ import annotations
+from typing import Protocol, Tuple
 import numpy as np
-from .feature_iface import Featurizer
 from .interfaces import Snapshot
+
+class Featurizer(Protocol):
+    """Encodes a Snapshot into an observation array."""
+    def shape(self, grid_h: int, grid_w: int) -> Tuple[int, ...]: ...
+    def encode(self, snap: Snapshot) -> np.ndarray: ...
 
 class CH3Featurizer(Featurizer):
     def __init__(self, include_walls: bool = True, include_dir: bool = True, flat: bool = False):

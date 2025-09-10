@@ -5,8 +5,8 @@ from typing import Optional, Dict, Any, Tuple
 import numpy as np
 from .interfaces import Env, StepResult, Snapshot
 from .snake_rules import Rules
-from .feature_iface import Featurizer
-from .reward_iface import RewardAdapter
+from .featureizers import Featurizer
+from .rewards import RewardAdapter
 from config import AppConfig
 
 def manhattan(a, b):
@@ -25,6 +25,7 @@ class SnakeEnv(Env):
         reward_adapter: Optional[RewardAdapter] = None,
         seed: Optional[int] = None,
     ):
+        self.cfg = cfg
         self.rules = rules
         self.obs_mode = obs_mode
         self.reward_mode = reward_mode

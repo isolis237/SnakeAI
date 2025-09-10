@@ -4,12 +4,8 @@ from typing import Optional, Dict, Any
 import os, json
 import numpy as np
 
-from core.interfaces import Policy
-from .dqn_config import DQNConfig
-from .networks import QNetwork
-from .replay import ReplayBuffer, Transition
-from .schedulers import EpsilonScheduler
-from .utils import resolve_device
+from core.interfaces import Policy, QNetwork, ReplayBuffer, Transition
+from .utils import resolve_device, EpsilonScheduler
 
 @dataclass
 class DQNState:
@@ -25,7 +21,7 @@ class DQNAgent(Policy):
         target_net: QNetwork,
         replay: ReplayBuffer,
         eps_sched: EpsilonScheduler,
-        cfg: DQNConfig(device=resolve_device(cfg.device)),
+        cfg: AppConfig(),
         optimizer: Any,  # e.g., torch.optim.Optimizer
         rng: Optional[np.random.Generator] = None,
     ):

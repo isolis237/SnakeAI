@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, List
 import numpy as np
 
-from .replay import Transition, ReplayBuffer
+from core.interfaces import Transition, ReplayBuffer
 
 
 @dataclass

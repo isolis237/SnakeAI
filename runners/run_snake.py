@@ -7,7 +7,7 @@ from viz.keyboard import Keyboard
 from config import AppConfig
 from rl.utils import dir_to_abs
 
-def main(args):
+def main():
     cfg = AppConfig()
 
     rules = Rules(cfg)

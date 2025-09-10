@@ -2,8 +2,7 @@
 from __future__ import annotations
 import multiprocessing as mp
 from typing import Optional, Tuple, Any
-from core.interfaces import Snapshot
-from viz.snapshot_sink import SnapshotSink
+from core.interfaces import Snapshot, SnapshotSink
 from viz.renderer_pygame import PygameRenderer
 
 from config import AppConfig
@@ -14,7 +13,15 @@ def _viewer_proc(q: mp.Queue, grid_w: int, grid_h: int, fps: int,
                  record_dir: Optional[str], title: str, cell_px: int,
                  grid_lines: bool, show_hud: bool):
     ren = PygameRenderer()
-    ren.open(AppConfig())
+    # EXPECT: PygameRenderer.open(grid_w, grid_h, cfg)
+    cfg = AppConfig(
+        render_cell=cell_px,
+        render_title=title,
+        render_grid_lines=grid_lines,
+        render_show_hud=show_hud,
+        render_record_dir=record_dir,
+    )
+    ren.open(cfg)
     try:
         while True:
             msg: Msg = q.get()
@@ -24,7 +31,7 @@ def _viewer_proc(q: mp.Queue, grid_w: int, grid_h: int, fps: int,
             if kind == "quit":
                 break
             elif kind == "overlay":
-                ren.set_overlay(payload)  # payload is str
+                ren.set_overlay(payload)
             elif kind == "frame":
                 snap: Snapshot = payload
                 ren.draw(snap)
@@ -64,7 +71,6 @@ class LiveViewer(SnapshotSink):
         self._proc.start()
 
     def set_overlay(self, text: str) -> None:
-        # Send a control message to the child process
         if self._q:
             try:
                 self._q.put_nowait(("overlay", text))
