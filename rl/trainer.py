@@ -35,6 +35,8 @@ class DQNTrainer:
         if self.live_hook is not None and hasattr(self.live_hook, "ensure_started"):
             self.live_hook.ensure_started()
 
+        high_score = 0
+
         try:
             for ep in range(num_episodes):
                 if self.live_hook is not None and hasattr(self.live_hook, "start_episode"):
@@ -95,17 +97,19 @@ class DQNTrainer:
                     "death_reason": final_info.get("reason"),
                 }
 
+                high_score = max(high_score, final_info.get("score",0))
+
                 if self.live_hook is not None and hasattr(self.live_hook, "end_episode"):
                     self.live_hook.end_episode(summary, final_info)
 
                 if self.hooks.on_episode_end:
                     self.hooks.on_episode_end(ep, summary)
 
+            # end of train_and_stream
             if self.live_hook is not None and hasattr(self.live_hook, "replay_best_and_wait"):
                 self.live_hook.replay_best_and_wait(timeout=15.0)
-            elif self.live_hook is not None and hasattr(self.live_hook, "replay_best"):
-                # fallback: non-blocking, may still get cut if you close immediately
-                self.live_hook.replay_best()
+            
+            print(f"Highest score: {high_score}")
 
         finally:
             if self.live_hook is not None and hasattr(self.live_hook, "close"):

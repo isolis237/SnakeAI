@@ -14,24 +14,20 @@ class Episode:
     gap_sec: float = 0.35  # pause between episodes
 
 class EpisodeRecorder:
-    def __init__(self, stream_prob: float = 1.0, rng_seed: Optional[int] = None):
-        self._rng = random.Random(rng_seed)
-        self._stream_prob = max(0.0, min(1.0, stream_prob))
-        self._recording = False
+    """
+    Always capture the current episode. No randomness here.
+    The hook decides what to do with the finished episode.
+    """
+    def __init__(self):
         self._frames: List[Snapshot] = []
         self._ep_idx: Optional[int] = None
 
     def start(self, ep_index: int) -> None:
-        self._recording = (self._rng.random() < self._stream_prob)
         self._frames.clear()
         self._ep_idx = ep_index
 
-    def is_recording(self) -> bool:
-        return self._recording
-
     def capture(self, snap: Snapshot) -> None:
-        if self._recording:
-            self._frames.append(snap)
+        self._frames.append(snap)
 
     def _overlay_from_summary(self, summary: Dict[str, Any]) -> str:
         ep = self._ep_idx if self._ep_idx is not None else "-"
@@ -41,14 +37,8 @@ class EpisodeRecorder:
         dr = str(summary.get("death_reason", ""))
         return f"Episode {ep}  |  R={r:.2f}  len={ln}  score={sc}  death={dr}"
 
-    def finish(self, summary: Dict[str, Any]) -> Optional[Episode]:
-        if not self._recording or not self._frames:
-            self._recording = False
-            self._frames.clear()
-            self._ep_idx = None
-            return None
+    def finish(self, summary: Dict[str, Any]) -> Episode:
         ep = Episode(frames=list(self._frames), overlay=self._overlay_from_summary(summary))
-        self._recording = False
         self._frames.clear()
         self._ep_idx = None
         return ep
@@ -145,51 +135,45 @@ class EpisodeQueuePlayer:
         self._started = False
 
 class LiveHook:
-    """
-    Trainer-facing hook. Keeps a recent-episodes cache and auto-fills the player queue
-    to avoid multi-second gaps when training produces episodes slower than playback.
-    """
     def __init__(
         self,
         player: EpisodeQueuePlayer,
         recorder: EpisodeRecorder,
         cfg: AppConfig,
         *,
-        recent_cap: int = 8,
-        min_fill: int = 2,
-        target_fill: int = 4,
-        downsample_stride: int = 1,
-        feeder_interval_sec: float = 0.2,
-        rng_seed: Optional[int] = None,
+        stream_prob: float = 1.0,                # <— moved here
         best_selector: Optional[Callable[[Dict[str, Any]], float]] = None,
+        recent_cap: int = 8, min_fill: int = 2, target_fill: int = 4,
+        downsample_stride: int = 1, feeder_interval_sec: float = 0.2,
+        rng_seed: Optional[int] = None,
     ):
-        self._best_selector = best_selector or (lambda s: float(
-            s.get("final_score", s.get("reward", 0.0))
-        ))
         self._player = player
         self._rec = recorder
         self._grid_w, self._grid_h = cfg.grid_w, cfg.grid_h
-        self._best_key = cfg.best_metric
+        self._rng = random.Random(rng_seed)
+        self._stream_prob = max(0.0, min(1.0, stream_prob))
+
+        # best logic
+        self._score_of = best_selector or (lambda s: float(s.get("final_score", s.get("reward", 0.0))))
         self._best_val = float("-inf")
         self._best_ep: Optional[Episode] = None
 
+        # buffering (optional, for smooth playback)
         self._recent: deque[List[Snapshot]] = deque(maxlen=recent_cap)
         self._recent_overlays: deque[str] = deque(maxlen=recent_cap)
         self._stride = max(1, int(downsample_stride))
-        self._min_fill = int(min_fill)
-        self._target_fill = int(target_fill)
+        self._min_fill, self._target_fill = int(min_fill), int(target_fill)
         self._feeder_interval = max(0.05, float(feeder_interval_sec))
-        self._rng = random.Random(rng_seed)
 
         self._started = False
         self._feeder_stop = threading.Event()
         self._feeder_t: Optional[threading.Thread] = None
 
-    # --- lifecycle
+    # lifecycle
     def ensure_started(self) -> None:
         if not self._started:
             self._player.start(self._grid_w, self._grid_h)
-            # start feeder
+            # feeder (optional)
             self._feeder_stop.clear()
             self._feeder_t = threading.Thread(target=self._feeder_run, name="EpisodeFeeder", daemon=True)
             self._feeder_t.start()
@@ -203,35 +187,37 @@ class LiveHook:
                     need = max(0, self._target_fill - cur)
                     for _ in range(need):
                         k = self._rng.randrange(len(self._recent))
-                        frames = list(self._recent[k])  # copy
+                        frames = list(self._recent[k])
                         overlay = self._recent_overlays[k]
                         self._player.enqueue(Episode(frames=frames, overlay=overlay, gap_sec=0.25))
                 time.sleep(self._feeder_interval)
             except Exception:
                 time.sleep(self._feeder_interval)
 
-    # --- trainer API
+    # trainer API (slim)
     def start_episode(self, ep_index: int) -> None:
         self.ensure_started()
+        self._stream_this = (self._rng.random() < self._stream_prob)
         self._rec.start(ep_index)
 
     def record_snapshot(self, snap: Snapshot) -> None:
+        # Always capture — we may need it if this turns out to be the best run.
         self._rec.capture(snap)
 
-    def end_episode(self, episode_summary: Dict[str, Any], last_info: Dict[str, Any]) -> None:
-        ep = self._rec.finish(episode_summary)
-        if ep is None:
-            return
+    def end_episode(self, summary: Dict[str, Any], last_info: Dict[str, Any]) -> None:
+        ep = self._rec.finish(summary)
 
-        self._player.enqueue(ep)
+        # enqueue only if this one was selected for streaming
+        if self._stream_this:
+            self._player.enqueue(ep)
 
-        val = self._best_selector(episode_summary)   # NEW
+        # update best using fields we actually have (final_score or reward)
+        val = self._score_of(summary)
         if val > self._best_val:
             self._best_val = val
-            # keep an independent copy so later replays can’t be affected
             self._best_ep = Episode(frames=list(ep.frames), overlay=ep.overlay, gap_sec=0.0)
 
-        # cache a downsampled copy for feeder
+        # cache a downsampled copy for gap-filling playback
         if ep.frames:
             cached = ep.frames[::self._stride] if self._stride > 1 else ep.frames
             if cached:
@@ -241,30 +227,19 @@ class LiveHook:
     def replay_best_and_wait(self, timeout: Optional[float] = 15.0) -> None:
         if not self._best_ep:
             return
-        # If you run a feeder, stop it first so it won’t insert more episodes.
-        if hasattr(self, "_feeder_stop"):
-            self._feeder_stop.set()
-            if getattr(self, "_feeder_t", None):
-                self._feeder_t.join(timeout=0.5)
+        # stop feeder so nothing else gets queued in front
+        self._feeder_stop.set()
+        if self._feeder_t:
+            self._feeder_t.join(timeout=0.5)
 
-        # Play best immediately, no gaps, at the front of the line.
         best = Episode(frames=list(self._best_ep.frames),
                        overlay=f"BEST — score/reward={self._best_val:.2f}",
                        gap_sec=0.0)
         self._player.play_now(best, clear_queue=True)
         self._player.wait_idle(timeout=timeout)
 
-    def replay_best(self) -> None:
-        # legacy non-blocking version (keep if trainer still calls it)
-        if self._best_ep is not None:
-            self._player.play_now(self._best_ep, clear_queue=False)
-
     def close(self) -> None:
         self._feeder_stop.set()
         if self._feeder_t:
             self._feeder_t.join(timeout=0.5)
         self._player.close()
-
-    # (optional) legacy compatibility
-    def is_streaming(self) -> bool:
-        return self._rec.is_recording()

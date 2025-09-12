@@ -156,12 +156,12 @@ class SnakeEnv(Env):
         grid = np.zeros((H, W, C), dtype=np.float32)
 
         # Obs shape is (gridH, gridW, channels) i.e. (12x12x6)
-        # c1 -> snake body excluding head
-        # c2 -> snake head
-        # c3 -> food
-        # c4 -> walls
-        # c5 -> DirX
-        # c6 -> DirY
+        # c0 -> snake body excluding head
+        # c1 -> snake head
+        # c2 -> food
+        # c3 -> walls
+        # c4 -> DirX
+        # c5 -> DirY
 
         ch = 0
         for (x, y) in list(s.snake)[1:]:
@@ -209,38 +209,43 @@ class SnakeEnv(Env):
         # Terminal
         if cur.terminated:
             extra = 0.0
-            if cur.reason == 'wall':        extra += self._death_wall_extra
-            elif cur.reason == 'self':      extra += self._death_self_extra
-            elif cur.reason == 'starvation':extra += self._death_starv_extra
-            # credit prior score a bit so dying later while scoring is better than dying early
-            return np.clip(-1.0 + extra + self._term_score_w * float(prev.score),
-                        self._clip_lo, self._clip_hi)
+            if cur.reason == 'wall':         extra += self._death_wall_extra
+            elif cur.reason == 'self':       extra += self._death_self_extra
+            elif cur.reason == 'starvation': extra += self._death_starv_extra
+            return float(np.clip(
+                -1.0 + extra + self._term_score_w * float(prev.score),
+                self._clip_lo, self._clip_hi))
 
         r = 0.0
 
-        # Base per-step cost to discourage wandering/idling
-        r += self._step_cost
+        # step cost
+        r += -0.004   # softened from -0.01
 
-        # Bite reward with streak bonus
+        # potential shaping (normalized manhattan)
+        H, W = prev.grid_h, prev.grid_w
+        prev_d = manhattan(prev.snake[0], prev.food) / float(W + H)
+        cur_d  = manhattan(cur.snake[0],  cur.food)  / float(W + H)
+        r += self._k_potential * (prev_d - cur_d)   # + when closer
+
+        # bite + capped streak
         if cur.score > prev.score:
-            r += self._bite_base + self._bite_streak * float(self._streak)
-            # small immediate post-bite momentum bonus (handled by steps_since_bite==0 below)
+            r += self._bite_base + self._bite_streak * float(min(self._streak, 5))
 
-        # Anti-looping: penalize tiny orbits
+        # anti-looping
         if len(self._recent_heads) >= self._recent_heads.maxlen:
             if len(set(self._recent_heads)) <= 3:
                 r += self._loop_penalty
 
-        # Post-bite burst encouragement (brief, decays)
+        # brief post-bite encouragement
         s = self._steps_since_bite
-        if s <= self._post_bite_bonus_steps:
-            if len(set(self._recent_heads)) >= 5:           # avoid rewarding tight loops
-                r += self._post_bite_step_bonus * float(self._post_bite_bonus_steps - s)
+        if s <= self._post_bite_bonus_steps and len(set(self._recent_heads)) >= 5:
+            r += self._post_bite_step_bonus * float(self._post_bite_bonus_steps - s)
 
-        # Soft starvation ramp after half the threshold (optional)
+        # starvation ramp (optional if you also hard-cap)
         if self._steps_since_bite > (self._T_starve // 2):
-            ramp = min(0.10, 0.005 * float(self._steps_since_bite - self._T_starve // 2))
+            ramp = min(0.08, 0.004 * float(self._steps_since_bite - self._T_starve // 2))
             r -= ramp
 
         return float(np.clip(r, self._clip_lo, self._clip_hi))
+
 

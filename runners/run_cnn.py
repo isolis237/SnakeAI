@@ -10,7 +10,7 @@ from rl.dqn_agent import DQNAgent
 from rl.trainer import DQNTrainer, TrainHooks
 from rl.logging import CSVLogger, make_step_logger, make_episode_logger, ALL_KEYS
 from rl.metrics import EMA, WindowedStat
-from rl.torch_net import TorchMLPQNet
+from rl.torch_cnn_qnet import TorchCNNQNet
 from rl.ring_buffer import RingBuffer
 from rl.checkpoint import Checkpointer
 from rl.utils import LinearDecayEpsilon
@@ -36,8 +36,8 @@ def main():
         live_hook = LiveHook(player=player, recorder=EpisodeRecorder(), cfg=cfg)
 
     # --- Networks
-    q_net = TorchMLPQNet(obs_shape, n_actions, dueling=cfg.dueling, device=cfg.device)
-    target_net = TorchMLPQNet(obs_shape, n_actions, dueling=cfg.dueling, device=cfg.device)
+    q_net = TorchCNNQNet(obs_shape, n_actions, dueling=cfg.dueling, device=cfg.device)
+    target_net = TorchCNNQNet(obs_shape, n_actions, dueling=cfg.dueling, device=cfg.device)
 
     # --- Replay & epsilon
     replay = RingBuffer(capacity=cfg.replay_capacity, seed=cfg.seed)
@@ -48,10 +48,10 @@ def main():
 
     # --- Agent & Trainer
     agent = DQNAgent(q_net, target_net, replay, eps, cfg, optimizer)
-    agent.sync_target_hard()
+    agent.sync_target_hard() 
 
     # --- Checkpointer
-    ckpt = Checkpointer(agent, out_dir="runs/snake_dqn/mlp", tag="dqn",
+    ckpt = Checkpointer(agent, out_dir="runs/snake_dqn/cnn", tag="dqn",
                         save_every_episodes=1000, best_metric_key="epis/reward_mean100")
 
     print("=== Snake DQN ===")
@@ -60,7 +60,7 @@ def main():
     print(f"replay cap: {cfg.replay_capacity}  warmup: {cfg.warmup}  dueling: {cfg.dueling}")
     print("logs: runs/snake_dqn/logs.csv  tb: runs/snake_dqn/tb")
 
-    logger = CSVLogger("runs/snake_dqn/mlp/logs.csv", fieldnames=ALL_KEYS)
+    logger = CSVLogger("runs/snake_dqn/cnn/logs.csv", fieldnames=ALL_KEYS)
     on_step_log = make_step_logger(logger=logger, warmup=cfg.warmup, 
                                     log_every_updates=10, also_every_steps=200)
 
