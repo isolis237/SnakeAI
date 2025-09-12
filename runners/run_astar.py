@@ -12,9 +12,8 @@ from core.interfaces import Policy, Snapshot
 from rl.logging import CSVLogger, make_episode_logger, ALL_KEYS
 from rl.metrics import EMA, WindowedStat
 from rl.trainer import TrainHooks
-from rl.playback import EpisodeRecorder, EpisodeQueuePlayer, LiveHook
+from rl.playback import EpisodeRecorder, EpisodeQueuePlayer
 from viz.live_viewer import LiveViewer
-
 
 # -------- A* policy helpers --------
 
@@ -37,62 +36,53 @@ def rel_action_from_dirs(cur_dir: Tuple[int,int], next_dir: Tuple[int,int]) -> i
         return 0
     else:
         # 180° reversal (illegal for len>1 in absolute mode; relative mode shouldn’t ask for it)
-        # choose left by default to avoid crashing
         return 0
 
 
 class AStarPolicy(Policy):
     """
-    Single-step replanning A* to the food:
-      - Obstacles = snake body (optionally treat tail as free since it moves)
-      - Walls are implicit boundaries
-      - If no path: pick safest greedy step (toward food that doesn’t die immediately)
+    Single-step replanning A* to the food.
+    - Obstacles = snake body (tail optionally treated as free).
+    - Walls are implicit boundaries.
+    - If no path: pick safest greedy step (toward food that doesn’t die immediately).
     """
     def __init__(self, consider_tail_free: bool = True):
         self.consider_tail_free = consider_tail_free
+        self._snap: Optional[Snapshot] = None
+        self._relative_actions: bool = True
 
     def act(self, obs: np.ndarray) -> int:
-        # We don’t rely on obs; caller provides a snapshot via set_snapshot before act()
         snap = self._snap
-        H, W = snap.grid_h, snap.grid_w
+        assert snap is not None, "AStarPolicy.act called before set_snapshot()"
         head = snap.snake[0]
         food = snap.food
+        H, W = snap.grid_h, snap.grid_w
 
-        blocked = set(snap.snake)  # all body segments including head
+        blocked = set(snap.snake)
         if self.consider_tail_free and len(snap.snake) > 1:
-            # Tail will move unless we eat this step; free it to reduce false dead ends
-            tail = snap.snake[-1]
-            blocked.discard(tail)
+            blocked.discard(snap.snake[-1])  # tail likely moves
 
-        # Plan shortest path on grid using A*
         path = self._astar(head, food, blocked, W, H)
 
-        # Decide next absolute direction
         if path and len(path) >= 2:
             nxt = path[1]
             dx, dy = (nxt[0]-head[0], nxt[1]-head[1])
             next_dir = (int(np.sign(dx)), int(np.sign(dy)))
         else:
-            # No path: try safe greedy move
             next_dir = self._safe_greedy(head, food, blocked, W, H, cur_dir=snap.dir)
 
-        # Map to action depending on control mode
-        if snap:  # relative vs absolute
-            if self._relative_actions:
-                return rel_action_from_dirs(snap.dir, next_dir)
-            else:
-                return ABS_DIRS.index(next_dir)
+        if self._relative_actions:
+            return rel_action_from_dirs(snap.dir, next_dir)
+        else:
+            return ABS_DIRS.index(next_dir)
 
     def act_batch(self, obs_batch: np.ndarray) -> np.ndarray:
-        # Not used here; single-env eval
-        return np.array([self.act(obs_batch[0])])
+        return np.array([self.act(obs_batch[0])], dtype=np.int64)
 
-    # ----- plumbing to feed snapshot & mode -----
     def set_snapshot(self, snap: Snapshot, relative_actions: bool) -> None:
         self._snap = snap
         self._relative_actions = relative_actions
 
-    # ----- A* implementation -----
     def _astar(self, start, goal, blocked: set, W: int, H: int) -> Optional[List[Tuple[int,int]]]:
         def inb(p): return 0 <= p[0] < W and 0 <= p[1] < H
         def neigh(p):
@@ -111,7 +101,7 @@ class AStarPolicy(Policy):
         while openq:
             _, u = heapq.heappop(openq); in_open.discard(u)
             if u == goal:
-                # reconstruct
+                # reconstruct path
                 path = [u]
                 while u in parent:
                     u = parent[u]
@@ -124,13 +114,13 @@ class AStarPolicy(Policy):
                     parent[v] = u
                     f = cand + manhattan(v, goal)
                     if v not in in_open:
-                        heapq.heappush(openq, (f, v)); in_open.add(v)
+                        heapq.heappush(openq, (f, v))
+                        in_open.add(v)
         return None
 
     def _safe_greedy(
         self, head, food, blocked: set, W: int, H: int, cur_dir: Tuple[int,int]
     ) -> Tuple[int,int]:
-        # Rank moves by (closer to food first), but only those that keep us alive
         moves = []
         for d in ABS_DIRS:
             nx = (head[0] + d[0], head[1] + d[1])
@@ -139,12 +129,9 @@ class AStarPolicy(Policy):
         if moves:
             moves.sort(key=lambda t: t[0])
             return moves[0][1]
-        # If totally trapped, at least try to avoid 180° reverse in absolute mode
-        # Fall back to current direction if possible
         nx = (head[0] + cur_dir[0], head[1] + cur_dir[1])
         if 0 <= nx[0] < W and 0 <= nx[1] < H and nx not in blocked:
             return cur_dir
-        # Otherwise just pick any legal direction
         for d in ABS_DIRS:
             nx = (head[0] + d[0], head[1] + d[1])
             if 0 <= nx[0] < W and 0 <= nx[1] < H and nx not in blocked:
@@ -154,23 +141,30 @@ class AStarPolicy(Policy):
 
 def main():
     # --- Config & Env ---
-    cfg = AppConfig().with_(relative_actions=True)
+    cfg = AppConfig().with_(relative_actions=False) 
     rules = Rules(cfg)
     env = SnakeEnv(cfg, rules)
 
-    # --- Live view (optional) ---
-    live_hook = None
-    if cfg.live_view:
+    # --- Playback wiring ---
+    sink = None
+    player: Optional[EpisodeQueuePlayer] = None
+    recorder: Optional[EpisodeRecorder] = None
+    if getattr(cfg, "live_view", False):
         sink = LiveViewer(cfg)
         player = EpisodeQueuePlayer(sink=sink, fps=cfg.fps, max_queue=cfg.queue_max)
-        live_hook = LiveHook(player=player, recorder=EpisodeRecorder(), cfg=cfg)
+        player.start(cfg.grid_w, cfg.grid_h)   # start before enqueue
+        recorder = EpisodeRecorder()
 
-    # --- Logger (reuse your CSV format for apples/len, etc.) ---
+    # --- Logger ---
     logger = CSVLogger("runs/snake_astar/logs.csv", fieldnames=ALL_KEYS)
+    global_step_counter = {"x": 0}
     on_episode_end = make_episode_logger(
-        logger=logger, ema_reward=EMA(0.05), ema_length=EMA(0.05),
-        win_reward=WindowedStat(100), win_length=WindowedStat(100),
-        step_getter=lambda: 0  # no learner step counter for A*
+        logger=logger,
+        ema_reward=EMA(0.05),
+        ema_length=EMA(0.05),
+        win_reward=WindowedStat(100),
+        win_length=WindowedStat(100),
+        step_getter=lambda: global_step_counter["x"],
     )
     hooks = TrainHooks(on_episode_end=on_episode_end)
 
@@ -178,41 +172,74 @@ def main():
     policy = AStarPolicy(consider_tail_free=True)
 
     print("=== Snake A* ===")
-    print(f"grid: {cfg.grid_w}x{cfg.grid_h}  relative_actions: {cfg.relative_actions}")
+    print(f"grid: {cfg.grid_w}x{cfg.grid_h}  relative_actions: {cfg.relative_actions}  live_view: {getattr(cfg, 'live_view', False)}")
 
-    # --- Evaluate for cfg.episodes episodes (no learning) ---
-    for ep in range(cfg.episodes):
-        obs = env.reset(seed=cfg.seed)
-        total_r = 0.0
-        step = 0
-        terminated = False
-        while not terminated and (cfg.max_ep_steps or 10**9) > step:
-            snap = env.get_snapshot()
-            policy.set_snapshot(snap, relative_actions=cfg.relative_actions)
-            a = policy.act(obs)
-            res = env.step(a)
-            obs = res.obs
-            total_r += res.reward
-            terminated = res.terminated or res.truncated
-            step += 1
+    try:
+        high_score = 0
+        # --- Run episodes (no learning) ---
+        for ep in range(cfg.episodes):
+            obs = env.reset(seed=cfg.seed)
+            total_r = 0.0
+            step = 0
+            terminated = False
 
-        # Push episode summary to logger
-        # make_episode_logger expects info fields in trainer; we mimic minimal keys
-        info = {
-            "epis/reward": total_r,
-            "epis/length": step,
-            "epis/score": env.get_snapshot().score,
-        }
-        if hooks.on_episode_end:
-            hooks.on_episode_end(ep, info)
+            # start recording this episode
+            if recorder is not None:
+                recorder.start(ep)
+                recorder.capture(env.get_snapshot())
 
-        # Optional: stream the full episode via live_hook (if enabled)
-        if live_hook is not None and np.random.rand() < getattr(cfg, "stream_ep_prob", 0.0):
-            # No recorder integration shown here; LiveHook in your project may already capture episodes
-            pass
+            max_steps = cfg.max_ep_steps if cfg.max_ep_steps is not None else 10**9
 
-    logger.close()
+            while not terminated and step < max_steps:
+                snap = env.get_snapshot()
 
+                if recorder is not None:
+                    recorder.capture(snap)
 
-if __name__ == "__main__":
-    main()
+                policy.set_snapshot(snap, relative_actions=cfg.relative_actions)
+                a = policy.act(obs)
+                res = env.step(a)
+                obs = res.obs
+                total_r += res.reward
+                terminated = res.terminated or res.truncated
+                step += 1
+
+            # final frame + enqueue episode for playback
+            if recorder is not None and player is not None:
+                recorder.capture(env.get_snapshot())
+                last = env.get_snapshot()
+                summary = {
+                    "reward": total_r,
+                    "steps": step,
+                    "final_score": last.score,
+                    "death_reason": last.reason,
+                }
+                episode_obj = recorder.finish(summary)
+                player.enqueue(episode_obj)
+                high_score = max(high_score, last.score)
+
+            # logging
+            global_step_counter["x"] += step
+            if hooks.on_episode_end:
+                hooks.on_episode_end(ep, {
+                    "reward": total_r,
+                    "steps": step,
+                    "final_score": env.get_snapshot().score,
+                    "death_reason": env.get_snapshot().reason,
+                })
+
+        # ---- graceful playback shutdown ----
+        if player is not None:
+            # let the queue drain (so last episode finishes)
+            player.wait_idle(timeout=10.0)   # wait up to 10s; returns early if idle
+            player.close()                   # closes thread and sink
+
+        print(f"Highest score: {high_score}")
+
+    except KeyboardInterrupt:
+        # allow clean exit on Ctrl-C
+        if player is not None:
+            player.close()
+        raise
+    finally:
+        logger.close()
