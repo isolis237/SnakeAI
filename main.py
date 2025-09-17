@@ -32,9 +32,9 @@ def main():
     elif args.mode == "astar":
         run_astar()
     elif args.mode == "model":
-        model(episodes=10)
+        model()
     elif args.mode == "compare":  
-        compare_models(episodes=10, ckpt_dir="runs/snake_dqn")
+        compare_models()
 
 if __name__ == "__main__":
     main()

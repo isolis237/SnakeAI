@@ -11,7 +11,7 @@ class AppConfig:
     seed: Optional[int] = None
 
     # gameplay / manual controls
-    fps: int = 24
+    fps: int = 10
     start_len: int = 3
     max_steps_without_food: Optional[int] = None
 

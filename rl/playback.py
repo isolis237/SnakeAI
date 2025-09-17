@@ -169,6 +169,33 @@ class LiveHook:
         self._feeder_stop = threading.Event()
         self._feeder_t: Optional[threading.Thread] = None
 
+    def get_best_episode(self) -> Optional[Episode]:
+        """
+        Return a shallow copy of the best episode so far (or None).
+        Safe to enqueue on a player.
+        """
+        if not self._best_ep:
+            return None
+        return Episode(frames=list(self._best_ep.frames),
+                       overlay=self._best_ep.overlay,
+                       gap_sec=0.0)
+
+    def play_best_async(self, clear_queue: bool = True) -> bool:
+        """
+        Queue the best episode to the associated player without waiting.
+        Returns True if something was queued.
+        """
+        best = self.get_best_episode()
+        if not best:
+            return False
+        # stop feeder so nothing else preempts this
+        self._feeder_stop.set()
+        if self._feeder_t:
+            self._feeder_t.join(timeout=0.5)
+        self._player.play_now(best, clear_queue=clear_queue)
+        return True
+
+
     # lifecycle
     def ensure_started(self) -> None:
         if not self._started:
